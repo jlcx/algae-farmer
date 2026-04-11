@@ -1,0 +1,73 @@
+[package]
+name = "algae-farmer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+quick-xml = "0.37"
+regex = "1"
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
+tokio = { version = "1", features = ["full"] }
+urlencoding = "2"
+sysinfo = "0.33"
+crossbeam-channel = "0.5"
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+
+[[bin]]
+name = "discover_languages"
+path = "src/bin/discover_languages.rs"
+
+[[bin]]
+name = "commons_preproc"
+path = "src/bin/commons_preproc.rs"
+
+[[bin]]
+name = "wd_preproc"
+path = "src/bin/wd_preproc.rs"
+
+[[bin]]
+name = "lex_preproc"
+path = "src/bin/lex_preproc.rs"
+
+[[bin]]
+name = "wp_preproc"
+path = "src/bin/wp_preproc.rs"
+
+[[bin]]
+name = "wp_convert"
+path = "src/bin/wp_convert.rs"
+
+[[bin]]
+name = "convert2sv"
+path = "src/bin/convert2sv.rs"
+
+[[bin]]
+name = "convert_wkt2sv"
+path = "src/bin/convert_wkt2sv.rs"
+
+[[bin]]
+name = "wkt_preproc"
+path = "src/bin/wkt_preproc.rs"
+
+[[bin]]
+name = "dbp_convert"
+path = "src/bin/dbp_convert.rs"
+
+[[bin]]
+name = "microscope"
+path = "src/bin/microscope.rs"
+
+[[bin]]
+name = "get_featured"
+path = "src/bin/get_featured.rs"
+
+[[bin]]
+name = "db_load"
+path = "src/bin/db_load.rs"
