@@ -29,12 +29,54 @@ ALL_DBP_MAPPINGS        := $(shell ./make_lang_targets.sh dbpedia ALL_DBP_MAPPIN
 # Top-level targets
 # ============================================================
 
-.PHONY: all clean build wp_links_loaded wd_links_loaded wkt_loaded dbp_loaded
+.PHONY: all clean build download download-wikidata download-commons download-wikipedia download-wiktionary download-dbpedia wp_links_loaded wd_links_loaded wkt_loaded dbp_loaded
 
 all: wp_links_loaded wd_links_loaded wkt_loaded dbp_loaded
 
 build:
 	cargo build --release
+
+# ============================================================
+# Downloads
+# ============================================================
+
+download: run/languages.json
+	./scripts/download.sh all
+
+download-wikidata:
+	./scripts/download.sh wikidata
+
+download-commons:
+	./scripts/download.sh commons
+
+download-wikipedia: run/languages.json
+	./scripts/download.sh wikipedia
+
+download-wiktionary: run/languages.json
+	./scripts/download.sh wiktionary
+
+download-dbpedia: run/languages.json
+	./scripts/download.sh dbpedia
+
+# Data file rules: download on demand if missing.
+# All downloads are serialized through a single lock file so that
+# make -jN never issues concurrent requests to Wikimedia.
+DOWNLOAD_LOCK := .download.lock
+
+data/latest-all.json.gz:
+	@flock $(DOWNLOAD_LOCK) ./scripts/download.sh wikidata
+
+data/latest-lexemes.json.bz2:
+	@flock $(DOWNLOAD_LOCK) ./scripts/download.sh wikidata
+
+data/commonswiki-latest-pages-articles-multistream-index.txt.bz2:
+	@flock $(DOWNLOAD_LOCK) ./scripts/download.sh commons
+
+data/%wiki-latest-pages-articles-multistream.xml.bz2:
+	@flock $(DOWNLOAD_LOCK) ./scripts/download.sh wikipedia-single $*
+
+data/%wiktionary-latest-pages-articles-multistream.xml.bz2:
+	@flock $(DOWNLOAD_LOCK) ./scripts/download.sh wiktionary-single $*
 
 # ============================================================
 # Language discovery
@@ -121,19 +163,29 @@ run/%_dsts_failed_uniq.txt: run/%_conv_failed_uniq.txt
 # ============================================================
 
 run/links_converted_uniq_combined.txt: $(ALL_LANG_CONVERTED_UNIQ)
-	sort $^ | uniq -c | sort -rn > $@
+	@FILES=$$(./make_lang_targets.sh wikipedia ALL_LANG_CONVERTED_UNIQ); \
+	if [ -z "$$FILES" ]; then echo "Error: no language files found" >&2; exit 1; fi; \
+	sort $$FILES | uniq -c | sort -rn > $@
 
 run/conv_failed_uniq_combined.txt: $(patsubst %_links_converted_uniq.txt,%_conv_failed_uniq.txt,$(ALL_LANG_CONVERTED_UNIQ))
-	sort $^ | uniq -c | sort -rn > $@
+	@FILES=$$(./make_lang_targets.sh wikipedia ALL_LANG_CONVERTED_UNIQ | sed 's/_links_converted_uniq\.txt/_conv_failed_uniq.txt/g'); \
+	if [ -z "$$FILES" ]; then echo "Error: no language files found" >&2; exit 1; fi; \
+	sort $$FILES | uniq -c | sort -rn > $@
 
 run/commons_uniq_combined.txt: $(patsubst %_links_converted_uniq.txt,%_commons_uniq.txt,$(ALL_LANG_CONVERTED_UNIQ))
-	sort $^ | uniq -c | sort -rn > $@
+	@FILES=$$(./make_lang_targets.sh wikipedia ALL_LANG_CONVERTED_UNIQ | sed 's/_links_converted_uniq\.txt/_commons_uniq.txt/g'); \
+	if [ -z "$$FILES" ]; then echo "Error: no language files found" >&2; exit 1; fi; \
+	sort $$FILES | uniq -c | sort -rn > $@
 
 run/best_guesses_uniq_combined.txt: $(patsubst %_links_converted_uniq.txt,%_best_guesses_uniq.txt,$(ALL_LANG_CONVERTED_UNIQ))
-	sort $^ | uniq -c | sort -rn > $@
+	@FILES=$$(./make_lang_targets.sh wikipedia ALL_LANG_CONVERTED_UNIQ | sed 's/_links_converted_uniq\.txt/_best_guesses_uniq.txt/g'); \
+	if [ -z "$$FILES" ]; then echo "Error: no language files found" >&2; exit 1; fi; \
+	sort $$FILES | uniq -c | sort -rn > $@
 
 run/dsts_failed_uniq_combined.txt: $(patsubst %_links_converted_uniq.txt,%_dsts_failed_uniq.txt,$(ALL_LANG_CONVERTED_UNIQ))
-	sort $^ | uniq -c | sort -rn > $@
+	@FILES=$$(./make_lang_targets.sh wikipedia ALL_LANG_CONVERTED_UNIQ | sed 's/_links_converted_uniq\.txt/_dsts_failed_uniq.txt/g'); \
+	if [ -z "$$FILES" ]; then echo "Error: no language files found" >&2; exit 1; fi; \
+	sort $$FILES | uniq -c | sort -rn > $@
 
 # ============================================================
 # Format conversion to CSV
@@ -158,7 +210,9 @@ run/wkt/%_links_uniq.txt: run/wkt/%_wikilinks.txt
 
 run/wkt/links_uniq_combined.tsv run/wkt/entries.tsv &: $(ALL_WKT_LINKS) | build
 	@mkdir -p run/wkt
-	sort $^ | uniq -c | sort -rn | $(CONVERT_WKT)
+	@FILES=$$(./make_lang_targets.sh wiktionary ALL_WKT_LINKS); \
+	if [ -z "$$FILES" ]; then echo "Error: no wiktionary files found" >&2; exit 1; fi; \
+	sort $$FILES | uniq -c | sort -rn | $(CONVERT_WKT)
 
 run/wkt/entries_uniq.tsv: run/wkt/entries.tsv
 	sort $< | uniq > $@
@@ -167,22 +221,16 @@ run/wkt/entries_uniq.tsv: run/wkt/entries.tsv
 # DBpedia pipeline
 # ============================================================
 
-DBP_SRC_PREFIX := data/dbpedia/mappingbased-objects_lang
-define dbp_rule
-run/dbp/dbp_mappings_$(1).tsv: $(DBP_SRC_PREFIX)$(EQ)$(1).ttl.bz2 run/wd_labels.tsv | build
+# DBpedia per-language rule uses a shell recipe to sidestep the = in the filename
+run/dbp/dbp_mappings_%.tsv: run/wd_labels.tsv | build
 	@mkdir -p run/dbp
-	bzcat $$< | $$(DBP_CONVERT) $(1)
-endef
-EQ := =
-
-# Generate DBpedia per-language rules dynamically
-# (When languages are not yet discovered, this is a no-op)
-DBP_LANGS := $(shell ./make_lang_targets.sh dbpedia ALL_DBP_MAPPINGS 2>/dev/null | sed 's|run/dbp/dbp_mappings_||g; s|\.tsv||g')
-$(foreach lang,$(DBP_LANGS),$(eval $(call dbp_rule,$(lang))))
+	bzcat "data/dbpedia/mappingbased-objects_lang=$*.ttl.bz2" | $(DBP_CONVERT) $*
 
 run/dbp/combined_mappings.tsv: $(ALL_DBP_MAPPINGS)
 	@mkdir -p run/dbp
-	sort $^ | uniq -c | sort -rn > $@
+	@FILES=$$(./make_lang_targets.sh dbpedia ALL_DBP_MAPPINGS); \
+	if [ -z "$$FILES" ]; then echo "Error: no dbpedia files found" >&2; exit 1; fi; \
+	sort $$FILES | uniq -c | sort -rn > $@
 
 # ============================================================
 # Database loading

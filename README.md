@@ -21,15 +21,29 @@ createdb algae
 psql -d algae -f queries/db_commands.sql
 ```
 
-### 3. Provide source data
+### 3. Download source data
 
-Place (or symlink) Wikimedia and DBpedia dump files into a `data/` directory:
+Download all dump files (uses `run/languages.json` for the language list):
+
+```
+make download
+```
+
+Or download selectively:
+
+```
+make download-wikidata     # Wikidata entity + lexeme dumps
+make download-commons      # Commons multistream index
+make download-wikipedia    # Per-language Wikipedia XML dumps
+make download-wiktionary   # Per-language Wiktionary XML dumps
+make download-dbpedia      # DBpedia mapping files
+```
+
+Missing data files are also downloaded on demand when `make` needs them. If you already have dump files elsewhere, you can symlink them:
 
 ```
 ln -s /path/to/your/existing/data data
 ```
-
-Expected files include `latest-all.json.gz`, per-language Wikipedia/Wiktionary XML dumps, the Commons multistream index, and DBpedia Turtle files. See `SPEC.md` section 1 for the full list and URL patterns.
 
 ### 4. Discover languages
 
