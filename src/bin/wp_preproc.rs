@@ -1,15 +1,30 @@
 use anyhow::Result;
 use clap::Parser;
+use crossbeam_channel::bounded;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use regex::Regex;
-use std::io::{self, BufWriter, Read, Write};
+use std::io::{self, BufWriter, Write};
 use std::path::Path;
+use std::thread;
 
 #[derive(Parser)]
 struct Args {
     /// Language code (e.g., 'en', 'de')
     lang: String,
+}
+
+/// A complete parsed page ready for worker processing.
+struct Page {
+    title: String,
+    redirect_target: Option<String>,
+    text: String,
+}
+
+/// Output produced by a worker for one page.
+enum PageOutput {
+    Redirect { title: String, target: String },
+    Links { title: String, links: Vec<String> },
 }
 
 fn extract_wikilinks(text: &str) -> Vec<String> {
@@ -74,18 +89,91 @@ fn extract_wikilinks(text: &str) -> Vec<String> {
 fn main() -> Result<()> {
     env_logger::init();
     let args = Args::parse();
+    let lang = args.lang.clone();
     let run_dir = Path::new("run");
 
-    let links_path = run_dir.join(format!("{}_wikilinks.txt", args.lang));
-    let redirects_path = run_dir.join(format!("{}_redirects.txt", args.lang));
+    let num_workers = thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .max(2)
+        - 1; // reserve one core for the reader/writer
+    let num_workers = num_workers.max(1);
 
-    let mut links_out = BufWriter::new(std::fs::File::create(&links_path)?);
-    let mut redirects_out = BufWriter::new(std::fs::File::create(&redirects_path)?);
+    log::info!("[{lang}] Starting with {num_workers} worker threads");
 
-    let mut input = String::new();
-    io::stdin().read_to_string(&mut input)?;
+    // Channel: reader -> workers (parsed pages)
+    let (page_tx, page_rx) = bounded::<Page>(num_workers * 64);
 
-    let mut reader = Reader::from_str(&input);
+    // Channel: workers -> writer (processed output)
+    let (out_tx, out_rx) = bounded::<PageOutput>(num_workers * 64);
+
+    // Spawn worker threads
+    let mut worker_handles = Vec::with_capacity(num_workers);
+    for _ in 0..num_workers {
+        let page_rx = page_rx.clone();
+        let out_tx = out_tx.clone();
+
+        let handle = thread::spawn(move || {
+            for page in page_rx {
+                let output = if let Some(target) = page.redirect_target {
+                    PageOutput::Redirect {
+                        title: page.title,
+                        target,
+                    }
+                } else {
+                    PageOutput::Links {
+                        title: page.title,
+                        links: extract_wikilinks(&page.text),
+                    }
+                };
+
+                if out_tx.send(output).is_err() {
+                    break;
+                }
+            }
+        });
+        worker_handles.push(handle);
+    }
+    // Drop our copy so the writer sees EOF when all workers finish
+    drop(out_tx);
+
+    // Spawn writer thread
+    let writer_lang = lang.clone();
+    let writer_handle = thread::spawn(move || -> Result<()> {
+        let links_path = run_dir.join(format!("{}_wikilinks.txt", writer_lang));
+        let redirects_path = run_dir.join(format!("{}_redirects.txt", writer_lang));
+
+        let mut links_out = BufWriter::new(std::fs::File::create(&links_path)?);
+        let mut redirects_out = BufWriter::new(std::fs::File::create(&redirects_path)?);
+
+        let mut count = 0u64;
+        for output in out_rx {
+            match output {
+                PageOutput::Redirect { title, target } => {
+                    writeln!(redirects_out, "{title}\t{target}")?;
+                }
+                PageOutput::Links { title, links } => {
+                    for link in links {
+                        writeln!(links_out, "{title}\t{link}")?;
+                    }
+                }
+            }
+
+            count += 1;
+            if count % 500_000 == 0 {
+                log::info!("[{writer_lang}] Written {count} pages");
+            }
+        }
+
+        links_out.flush()?;
+        redirects_out.flush()?;
+
+        log::info!("[{writer_lang}] Done. Written {count} pages total.");
+        Ok(())
+    });
+
+    // Reader: main thread parses XML and dispatches pages
+    let mut reader = Reader::from_reader(io::BufReader::new(io::stdin().lock()));
     reader.config_mut().trim_text(true);
 
     let mut in_page = false;
@@ -96,11 +184,10 @@ fn main() -> Result<()> {
     let mut page_ns = String::new();
     let mut page_text = String::new();
     let mut redirect_target: Option<String> = None;
-
-    let mut page_count = 0u64;
+    let mut buf = Vec::new();
 
     loop {
-        match reader.read_event() {
+        match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                 let local = e.local_name();
                 match local.as_ref() {
@@ -121,7 +208,6 @@ fn main() -> Result<()> {
                         in_text = true;
                     }
                     b"redirect" if in_page => {
-                        // Get title attribute
                         for attr in e.attributes().flatten() {
                             if attr.key.as_ref() == b"title" {
                                 redirect_target =
@@ -156,43 +242,38 @@ fn main() -> Result<()> {
                             continue;
                         }
 
-                        // Handle redirects
-                        if let Some(ref target) = redirect_target {
-                            writeln!(redirects_out, "{}\t{}", page_title, target)?;
-                        } else {
-                            // Extract wikilinks
-                            let links = extract_wikilinks(&page_text);
-                            for link in links {
-                                writeln!(links_out, "{}\t{}", page_title, link)?;
-                            }
-                        }
+                        let page = Page {
+                            title: std::mem::take(&mut page_title),
+                            redirect_target: redirect_target.take(),
+                            text: std::mem::take(&mut page_text),
+                        };
 
-                        page_count += 1;
-                        if page_count % 500_000 == 0 {
-                            log::info!("[{}] Processed {page_count} pages", args.lang);
+                        if page_tx.send(page).is_err() {
+                            break;
                         }
-
-                        // Release page data to prevent memory growth
-                        page_title.clear();
-                        page_ns.clear();
-                        page_text.clear();
-                        redirect_target = None;
                     }
                     _ => {}
                 }
             }
             Ok(Event::Eof) => break,
             Err(e) => {
-                log::warn!("XML parse error: {e}");
+                log::warn!("[{lang}] XML parse error: {e}");
                 break;
             }
             _ => {}
         }
     }
 
-    log::info!(
-        "[{}] Done. Processed {page_count} pages total.",
-        args.lang
-    );
+    // Signal workers that input is done
+    drop(page_tx);
+
+    // Wait for workers to finish
+    for handle in worker_handles {
+        handle.join().expect("worker thread panicked");
+    }
+
+    // Wait for writer to finish
+    writer_handle.join().expect("writer thread panicked")?;
+
     Ok(())
 }

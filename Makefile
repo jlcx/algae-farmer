@@ -91,7 +91,7 @@ run/languages.json: | build
 # ============================================================
 
 run/commons_files.txt: data/commonswiki-latest-pages-articles-multistream-index.txt.bz2 | build
-	bzcat $< | $(COMMONS) > $@
+	pv $< | lbzip2 -dc | $(COMMONS) > $@
 
 # ============================================================
 # Wikidata entity preprocessing
@@ -100,7 +100,7 @@ run/commons_files.txt: data/commonswiki-latest-pages-articles-multistream-index.
 # wd_preproc produces all four outputs in one pass
 run/items.csv run/links.csv run/wd_labels.tsv run/date_claims.csv &: data/latest-all.json.gz run/languages.json | build
 	@mkdir -p run
-	zcat $< | $(WD_PREPROC)
+	pv $< | zcat | $(WD_PREPROC)
 
 run/links_uniq.csv: run/links.csv
 	sort $< | uniq > $@
@@ -109,9 +109,9 @@ run/links_uniq.csv: run/links.csv
 # Wikidata lexeme preprocessing
 # ============================================================
 
-run/from_lemmas.tsv run/from_forms.tsv run/l2l.tsv run/l2q.tsv run/s2q.tsv run/s2s.tsv &: data/latest-all.json.gz | build
+run/from_lemmas.tsv run/from_forms.tsv run/l2l.tsv run/l2q.tsv run/s2q.tsv run/s2s.tsv &: data/latest-lexemes.json.bz2 | build
 	@mkdir -p run
-	zcat $< | $(LEX_PREPROC)
+	pv $< | lbzip2 -dc | $(LEX_PREPROC)
 
 run/from_lemmas_uniq.tsv: run/from_lemmas.tsv
 	sort $< | uniq > $@
@@ -132,8 +132,11 @@ run/s2s_uniq.tsv: run/s2s.tsv
 # Per-language Wikipedia extraction
 # ============================================================
 
-run/%_wikilinks.txt run/%_redirects.txt &: data/%wiki-latest-pages-articles-multistream.xml.bz2 | build
-	bzcat $< | $(WP_PREPROC) $*
+# Serialized via lock: wp_preproc is internally parallel, so only one at a time
+WP_PREPROC_LOCK := .wp_preproc.lock
+# Also wait for wd_preproc to finish so two CPU-saturating jobs don't overlap
+run/%_wikilinks.txt run/%_redirects.txt &: data/%wiki-latest-pages-articles-multistream.xml.bz2 run/items.csv | build
+	@flock $(WP_PREPROC_LOCK) sh -c "pv $< | lbzip2 -dc | $(WP_PREPROC) $*"
 
 # ============================================================
 # Wikipedia link conversion (per language)
@@ -203,7 +206,7 @@ run/items_loaded.csv: run/items.csv
 
 run/wkt/%_wikilinks.txt run/wkt/%_redirects.txt &: data/%wiktionary-latest-pages-articles-multistream.xml.bz2 | build
 	@mkdir -p run/wkt
-	bzcat $< | $(WKT_PREPROC) $*
+	pv $< | lbzip2 -dc | $(WKT_PREPROC) $*
 
 run/wkt/%_links_uniq.txt: run/wkt/%_wikilinks.txt
 	sort $< | uniq > $@
@@ -224,7 +227,7 @@ run/wkt/entries_uniq.tsv: run/wkt/entries.tsv
 # DBpedia per-language rule uses a shell recipe to sidestep the = in the filename
 run/dbp/dbp_mappings_%.tsv: run/wd_labels.tsv | build
 	@mkdir -p run/dbp
-	bzcat "data/dbpedia/mappingbased-objects_lang=$*.ttl.bz2" | $(DBP_CONVERT) $*
+	pv "data/dbpedia/mappingbased-objects_lang=$*.ttl.bz2" | lbzip2 -dc | $(DBP_CONVERT) $*
 
 run/dbp/combined_mappings.tsv: $(ALL_DBP_MAPPINGS)
 	@mkdir -p run/dbp

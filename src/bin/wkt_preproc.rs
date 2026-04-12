@@ -3,7 +3,7 @@ use clap::Parser;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use regex::Regex;
-use std::io::{self, BufWriter, Read, Write};
+use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
 #[derive(Parser)]
@@ -66,10 +66,7 @@ fn main() -> Result<()> {
     let mut links_out = BufWriter::new(std::fs::File::create(&links_path)?);
     let mut redirects_out = BufWriter::new(std::fs::File::create(&redirects_path)?);
 
-    let mut input = String::new();
-    io::stdin().read_to_string(&mut input)?;
-
-    let mut reader = Reader::from_str(&input);
+    let mut reader = Reader::from_reader(io::BufReader::new(io::stdin().lock()));
     reader.config_mut().trim_text(true);
 
     let mut in_page = false;
@@ -82,9 +79,10 @@ fn main() -> Result<()> {
     let mut page_text = String::new();
     let mut redirect_target: Option<String> = None;
     let mut page_count = 0u64;
+    let mut buf = Vec::new();
 
     loop {
-        match reader.read_event() {
+        match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                 let local = e.local_name();
                 match local.as_ref() {
