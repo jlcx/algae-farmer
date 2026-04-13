@@ -1,23 +1,9 @@
+use algae_farmer::languages;
 use anyhow::Result;
-use clap::Parser;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 use sysinfo::System;
-
-#[derive(Parser)]
-struct Args {
-    /// Language code to process (e.g., 'en', 'de')
-    lang: String,
-
-    /// Maximum redirect chain depth
-    #[arg(long, default_value = "5")]
-    max_redirect_depth: usize,
-
-    /// Memory ceiling as percentage of available RAM (0-100)
-    #[arg(long, default_value = "80")]
-    memory_ceiling: u8,
-}
 
 type QidDict = HashMap<String, HashMap<String, String>>;
 
@@ -146,17 +132,20 @@ fn resolve_redirect(
     (None, true) // exceeded depth
 }
 
-fn main() -> Result<()> {
-    env_logger::init();
-    let args = Args::parse();
-    let run_dir = Path::new("run");
-
-    let qid_dict = load_qid_dict(run_dir, args.memory_ceiling)?;
-    let commons_files = load_commons_files(&run_dir.join("commons_files.txt"))?;
-
-    let lang = &args.lang;
+fn process_language(
+    lang: &str,
+    run_dir: &Path,
+    qid_dict: &QidDict,
+    commons_files: &HashSet<String>,
+    max_redirect_depth: usize,
+) -> Result<()> {
     let wikilinks_path = run_dir.join(format!("{lang}_wikilinks.txt"));
     let redirects_path = run_dir.join(format!("{lang}_redirects.txt"));
+
+    if !wikilinks_path.exists() {
+        log::warn!("[{lang}] No wikilinks file found, skipping");
+        return Ok(());
+    }
 
     let redirects = load_redirects(&redirects_path)?;
 
@@ -230,7 +219,7 @@ fn main() -> Result<()> {
         let mut resolved = false;
         for try_target in &[link_target.to_string(), cap_target.clone()] {
             let (resolved_title, exceeded) =
-                resolve_redirect(try_target, &redirects, args.max_redirect_depth);
+                resolve_redirect(try_target, &redirects, max_redirect_depth);
             if exceeded {
                 writeln!(chain_exceeded_out, "{try_target}")?;
             }
@@ -334,5 +323,24 @@ fn main() -> Result<()> {
     log::info!(
         "[{lang}] Done. total={count}, converted={converted}, failed={failed}, wikt={wikt_count}"
     );
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    env_logger::init();
+    let run_dir = Path::new("run");
+
+    let languages = languages::load_languages(run_dir, "wikipedia")?;
+    log::info!("Processing {} Wikipedia languages", languages.len());
+
+    let qid_dict = load_qid_dict(run_dir, 80)?;
+    let commons_files = load_commons_files(&run_dir.join("commons_files.txt"))?;
+
+    for lang in &languages {
+        log::info!("[{lang}] Starting link conversion");
+        process_language(lang, run_dir, &qid_dict, &commons_files, 5)?;
+    }
+
+    log::info!("All languages processed.");
     Ok(())
 }

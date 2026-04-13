@@ -21,6 +21,8 @@ DB_LOAD    := $(BIN_DIR)/db_load
 DBNAME ?= algae
 
 # Language target lists (dynamically generated from run/languages.json)
+ALL_LANG_WIKILINKS      := $(shell ./make_lang_targets.sh wikipedia ALL_LANG_WIKILINKS 2>/dev/null)
+ALL_LANG_CONVERTED      := $(shell ./make_lang_targets.sh wikipedia ALL_LANG_CONVERTED 2>/dev/null)
 ALL_LANG_CONVERTED_UNIQ := $(shell ./make_lang_targets.sh wikipedia ALL_LANG_CONVERTED_UNIQ 2>/dev/null)
 ALL_WKT_LINKS           := $(shell ./make_lang_targets.sh wiktionary ALL_WKT_LINKS 2>/dev/null)
 ALL_DBP_MAPPINGS        := $(shell ./make_lang_targets.sh dbpedia ALL_DBP_MAPPINGS 2>/dev/null)
@@ -29,7 +31,7 @@ ALL_DBP_MAPPINGS        := $(shell ./make_lang_targets.sh dbpedia ALL_DBP_MAPPIN
 # Top-level targets
 # ============================================================
 
-.PHONY: all clean build download download-wikidata download-commons download-wikipedia download-wiktionary download-dbpedia wp_links_loaded wd_links_loaded wkt_loaded dbp_loaded
+.PHONY: all clean build download check-downloads download-wikidata download-commons download-wikipedia download-wiktionary download-dbpedia wp_links_loaded wd_links_loaded wkt_loaded dbp_loaded
 
 all: wp_links_loaded wd_links_loaded wkt_loaded dbp_loaded
 
@@ -57,6 +59,12 @@ download-wiktionary: run/languages.json
 
 download-dbpedia: run/languages.json
 	./scripts/download.sh dbpedia
+
+# Re-check all downloads (wget -N only fetches if remote is newer).
+# Updated files get new mtimes, so downstream targets rebuild automatically.
+# Usage: make check-downloads && make -j16 all
+check-downloads: run/languages.json
+	./scripts/download.sh all
 
 # Data file rules: download on demand if missing.
 # All downloads are serialized through a single lock file so that
@@ -91,7 +99,7 @@ run/languages.json: | build
 # ============================================================
 
 run/commons_files.txt: data/commonswiki-latest-pages-articles-multistream-index.txt.bz2 | build
-	pv $< | lbzip2 -dc | $(COMMONS) > $@
+	pv -N commons $< | lbzip2 -dc | $(COMMONS) > $@
 
 # ============================================================
 # Wikidata entity preprocessing
@@ -100,7 +108,7 @@ run/commons_files.txt: data/commonswiki-latest-pages-articles-multistream-index.
 # wd_preproc produces all four outputs in one pass
 run/items.csv run/links.csv run/wd_labels.tsv run/date_claims.csv &: data/latest-all.json.gz run/languages.json | build
 	@mkdir -p run
-	pv $< | zcat | $(WD_PREPROC)
+	pv -N wikidata $< | zcat | $(WD_PREPROC)
 
 run/links_uniq.csv: run/links.csv
 	sort $< | uniq > $@
@@ -111,7 +119,7 @@ run/links_uniq.csv: run/links.csv
 
 run/from_lemmas.tsv run/from_forms.tsv run/l2l.tsv run/l2q.tsv run/s2q.tsv run/s2s.tsv &: data/latest-lexemes.json.bz2 | build
 	@mkdir -p run
-	pv $< | lbzip2 -dc | $(LEX_PREPROC)
+	pv -N lexemes $< | lbzip2 -dc | $(LEX_PREPROC)
 
 run/from_lemmas_uniq.tsv: run/from_lemmas.tsv
 	sort $< | uniq > $@
@@ -132,18 +140,18 @@ run/s2s_uniq.tsv: run/s2s.tsv
 # Per-language Wikipedia extraction
 # ============================================================
 
-# Serialized via lock: wp_preproc is internally parallel, so only one at a time
-WP_PREPROC_LOCK := .wp_preproc.lock
+# Serialized via lock: wp/wkt_preproc are internally parallel, so only one at a time
+XML_PREPROC_LOCK := .xml_preproc.lock
 # Also wait for wd_preproc to finish so two CPU-saturating jobs don't overlap
 run/%_wikilinks.txt run/%_redirects.txt &: data/%wiki-latest-pages-articles-multistream.xml.bz2 run/items.csv | build
-	@flock $(WP_PREPROC_LOCK) sh -c "pv $< | lbzip2 -dc | $(WP_PREPROC) $*"
+	@flock $(XML_PREPROC_LOCK) sh -c "pv -N '$*wiki' $< | lbzip2 -dc | $(WP_PREPROC) $*"
 
 # ============================================================
-# Wikipedia link conversion (per language)
+# Wikipedia link conversion (single invocation for all languages)
 # ============================================================
 
-run/%_links_converted.txt: run/%_wikilinks.txt run/%_redirects.txt run/wd_labels.tsv run/commons_files.txt | build
-	$(WP_CONVERT) $*
+$(ALL_LANG_CONVERTED) &: $(ALL_LANG_WIKILINKS) run/wd_labels.tsv run/commons_files.txt | build
+	$(WP_CONVERT)
 
 # Per-language sort/dedup
 run/%_links_converted_uniq.txt: run/%_links_converted.txt
@@ -204,9 +212,10 @@ run/items_loaded.csv: run/items.csv
 # Wiktionary pipeline
 # ============================================================
 
+# Serialized via shared lock: wkt_preproc is internally parallel
 run/wkt/%_wikilinks.txt run/wkt/%_redirects.txt &: data/%wiktionary-latest-pages-articles-multistream.xml.bz2 | build
 	@mkdir -p run/wkt
-	pv $< | lbzip2 -dc | $(WKT_PREPROC) $*
+	@flock $(XML_PREPROC_LOCK) sh -c "pv -N '$*wiktionary' $< | lbzip2 -dc | $(WKT_PREPROC) $*"
 
 run/wkt/%_links_uniq.txt: run/wkt/%_wikilinks.txt
 	sort $< | uniq > $@
@@ -227,7 +236,7 @@ run/wkt/entries_uniq.tsv: run/wkt/entries.tsv
 # DBpedia per-language rule uses a shell recipe to sidestep the = in the filename
 run/dbp/dbp_mappings_%.tsv: run/wd_labels.tsv | build
 	@mkdir -p run/dbp
-	pv "data/dbpedia/mappingbased-objects_lang=$*.ttl.bz2" | lbzip2 -dc | $(DBP_CONVERT) $*
+	pv -N 'dbpedia-$*' "data/dbpedia/mappingbased-objects_lang=$*.ttl.bz2" | lbzip2 -dc | $(DBP_CONVERT) $*
 
 run/dbp/combined_mappings.tsv: $(ALL_DBP_MAPPINGS)
 	@mkdir -p run/dbp

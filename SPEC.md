@@ -531,9 +531,10 @@ run/links_uniq.csv: run/links.csv
 run/%_wikilinks.txt run/%_redirects.txt: data/%wiki-latest-*.xml.bz2
 	bzcat $< | wp_preproc $*
 
-# Wikipedia link conversion (depends on all per-language extractions + labels)
-run/%_links_converted.txt: run/%_wikilinks.txt run/%_redirects.txt run/wd_labels.tsv run/commons_files.txt
-	wp_convert $*
+# Wikipedia link conversion -- single invocation processes all languages
+# (loads wd_labels.tsv once, then loops over each language's wikilinks/redirects)
+$(ALL_LANG_CONVERTED): $(ALL_LANG_WIKILINKS) run/wd_labels.tsv run/commons_files.txt
+	wp_convert
 
 # Per-language sort/dedup and CSV conversion
 run/%_links_converted_uniq.txt: run/%_links_converted.txt

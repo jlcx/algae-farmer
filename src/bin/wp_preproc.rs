@@ -27,8 +27,7 @@ enum PageOutput {
     Links { title: String, links: Vec<String> },
 }
 
-fn extract_wikilinks(text: &str) -> Vec<String> {
-    let re = Regex::new(r"\[\[([^\[\]]*)\]\]").unwrap();
+fn extract_wikilinks(re: &Regex, text: &str) -> Vec<String> {
     let mut links = Vec::new();
 
     for cap in re.captures_iter(text) {
@@ -101,11 +100,8 @@ fn main() -> Result<()> {
 
     log::info!("[{lang}] Starting with {num_workers} worker threads");
 
-    // Channel: reader -> workers (parsed pages)
-    let (page_tx, page_rx) = bounded::<Page>(num_workers * 64);
-
-    // Channel: workers -> writer (processed output)
-    let (out_tx, out_rx) = bounded::<PageOutput>(num_workers * 64);
+    let (page_tx, page_rx) = bounded::<Page>(num_workers * 8);
+    let (out_tx, out_rx) = bounded::<PageOutput>(num_workers * 8);
 
     // Spawn worker threads
     let mut worker_handles = Vec::with_capacity(num_workers);
@@ -114,6 +110,7 @@ fn main() -> Result<()> {
         let out_tx = out_tx.clone();
 
         let handle = thread::spawn(move || {
+            let re = Regex::new(r"\[\[([^\[\]]*)\]\]").unwrap();
             for page in page_rx {
                 let output = if let Some(target) = page.redirect_target {
                     PageOutput::Redirect {
@@ -123,7 +120,7 @@ fn main() -> Result<()> {
                 } else {
                     PageOutput::Links {
                         title: page.title,
-                        links: extract_wikilinks(&page.text),
+                        links: extract_wikilinks(&re, &page.text),
                     }
                 };
 
@@ -185,8 +182,10 @@ fn main() -> Result<()> {
     let mut page_text = String::new();
     let mut redirect_target: Option<String> = None;
     let mut buf = Vec::new();
+    let mut is_article = false;
 
     loop {
+        buf.clear();
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                 let local = e.local_name();
@@ -197,6 +196,7 @@ fn main() -> Result<()> {
                         page_ns.clear();
                         page_text.clear();
                         redirect_target = None;
+                        is_article = false;
                     }
                     b"title" if in_page => {
                         in_title = true;
@@ -223,7 +223,8 @@ fn main() -> Result<()> {
                     page_title.push_str(&e.unescape().unwrap_or_default());
                 } else if in_ns {
                     page_ns.push_str(&e.unescape().unwrap_or_default());
-                } else if in_text {
+                } else if in_text && is_article {
+                    // Only accumulate text for articles/categories
                     page_text.push_str(&e.unescape().unwrap_or_default());
                 }
             }
@@ -231,14 +232,16 @@ fn main() -> Result<()> {
                 let local = e.local_name();
                 match local.as_ref() {
                     b"title" => in_title = false,
-                    b"ns" => in_ns = false,
+                    b"ns" => {
+                        in_ns = false;
+                        let ns: i32 = page_ns.parse().unwrap_or(-1);
+                        is_article = ns == 0 || ns == 14;
+                    }
                     b"text" => in_text = false,
                     b"page" => {
                         in_page = false;
 
-                        // Only process articles (ns=0) and categories (ns=14)
-                        let ns: i32 = page_ns.parse().unwrap_or(-1);
-                        if ns != 0 && ns != 14 {
+                        if !is_article {
                             continue;
                         }
 

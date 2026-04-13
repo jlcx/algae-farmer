@@ -44,6 +44,16 @@ case "$VARNAME" in
             echo -n "run/${lang}_links_converted_uniq.txt "
         done
         ;;
+    ALL_LANG_WIKILINKS)
+        for lang in $LANGS; do
+            echo -n "run/${lang}_wikilinks.txt "
+        done
+        ;;
+    ALL_LANG_CONVERTED)
+        for lang in $LANGS; do
+            echo -n "run/${lang}_links_converted.txt "
+        done
+        ;;
     ALL_WKT_LINKS)
         for lang in $LANGS; do
             echo -n "run/wkt/${lang}_wikilinks.txt "
