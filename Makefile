@@ -4,6 +4,9 @@ SHELL := /bin/bash
 # Allow overriding parallelism: make JOBS=8 all
 JOBS ?= $(shell nproc)
 
+# Parallel sort with large buffer for better performance
+SORT := sort --parallel=$(JOBS) --buffer-size=4G
+
 # Binaries (built via cargo)
 BIN_DIR := target/release
 DISCOVER   := $(BIN_DIR)/discover_languages
@@ -111,7 +114,7 @@ run/items.csv run/links.csv run/wd_labels.tsv run/date_claims.csv &: data/latest
 	pv -N wikidata $< | zcat | $(WD_PREPROC)
 
 run/links_uniq.csv: run/links.csv
-	sort $< | uniq > $@
+	$(SORT) $< | uniq > $@
 
 # ============================================================
 # Wikidata lexeme preprocessing
@@ -122,19 +125,19 @@ run/from_lemmas.tsv run/from_forms.tsv run/l2l.tsv run/l2q.tsv run/s2q.tsv run/s
 	pv -N lexemes $< | lbzip2 -dc | $(LEX_PREPROC)
 
 run/from_lemmas_uniq.tsv: run/from_lemmas.tsv
-	sort $< | uniq > $@
+	$(SORT) $< | uniq > $@
 
 run/from_forms_uniq.tsv: run/from_forms.tsv
-	sort $< | uniq > $@
+	$(SORT) $< | uniq > $@
 
 run/l2l_uniq.tsv: run/l2l.tsv
-	sort $< | uniq > $@
+	$(SORT) $< | uniq > $@
 
 run/s2q_uniq.tsv: run/s2q.tsv
-	sort $< | uniq > $@
+	$(SORT) $< | uniq > $@
 
 run/s2s_uniq.tsv: run/s2s.tsv
-	sort $< | uniq > $@
+	$(SORT) $< | uniq > $@
 
 # ============================================================
 # Per-language Wikipedia extraction
@@ -155,19 +158,19 @@ $(ALL_LANG_CONVERTED) &: $(ALL_LANG_WIKILINKS) run/wd_labels.tsv run/commons_fil
 
 # Per-language sort/dedup
 run/%_links_converted_uniq.txt: run/%_links_converted.txt
-	sort $< | uniq > $@
+	$(SORT) $< | uniq > $@
 
 run/%_conv_failed_uniq.txt: run/%_conv_failed.txt
-	sort $< | uniq > $@
+	$(SORT) $< | uniq > $@
 
 run/%_commons_uniq.txt: run/%_commons.txt
-	sort $< | uniq > $@
+	$(SORT) $< | uniq > $@
 
 run/%_best_guesses_uniq.txt: run/%_best_guesses.txt
-	sort $< | uniq > $@
+	$(SORT) $< | uniq > $@
 
 run/%_dsts_failed_uniq.txt: run/%_conv_failed_uniq.txt
-	cut -f2 $< | sort | uniq > $@
+	cut -f2 $< | $(SORT) | uniq > $@
 
 # ============================================================
 # Cross-language combination
@@ -176,27 +179,27 @@ run/%_dsts_failed_uniq.txt: run/%_conv_failed_uniq.txt
 run/links_converted_uniq_combined.txt: $(ALL_LANG_CONVERTED_UNIQ)
 	@FILES=$$(./make_lang_targets.sh wikipedia ALL_LANG_CONVERTED_UNIQ); \
 	if [ -z "$$FILES" ]; then echo "Error: no language files found" >&2; exit 1; fi; \
-	sort $$FILES | uniq -c | sort -rn > $@
+	$(SORT) $$FILES | uniq -c | $(SORT) -rn > $@
 
 run/conv_failed_uniq_combined.txt: $(patsubst %_links_converted_uniq.txt,%_conv_failed_uniq.txt,$(ALL_LANG_CONVERTED_UNIQ))
 	@FILES=$$(./make_lang_targets.sh wikipedia ALL_LANG_CONVERTED_UNIQ | sed 's/_links_converted_uniq\.txt/_conv_failed_uniq.txt/g'); \
 	if [ -z "$$FILES" ]; then echo "Error: no language files found" >&2; exit 1; fi; \
-	sort $$FILES | uniq -c | sort -rn > $@
+	$(SORT) $$FILES | uniq -c | $(SORT) -rn > $@
 
 run/commons_uniq_combined.txt: $(patsubst %_links_converted_uniq.txt,%_commons_uniq.txt,$(ALL_LANG_CONVERTED_UNIQ))
 	@FILES=$$(./make_lang_targets.sh wikipedia ALL_LANG_CONVERTED_UNIQ | sed 's/_links_converted_uniq\.txt/_commons_uniq.txt/g'); \
 	if [ -z "$$FILES" ]; then echo "Error: no language files found" >&2; exit 1; fi; \
-	sort $$FILES | uniq -c | sort -rn > $@
+	$(SORT) $$FILES | uniq -c | $(SORT) -rn > $@
 
 run/best_guesses_uniq_combined.txt: $(patsubst %_links_converted_uniq.txt,%_best_guesses_uniq.txt,$(ALL_LANG_CONVERTED_UNIQ))
 	@FILES=$$(./make_lang_targets.sh wikipedia ALL_LANG_CONVERTED_UNIQ | sed 's/_links_converted_uniq\.txt/_best_guesses_uniq.txt/g'); \
 	if [ -z "$$FILES" ]; then echo "Error: no language files found" >&2; exit 1; fi; \
-	sort $$FILES | uniq -c | sort -rn > $@
+	$(SORT) $$FILES | uniq -c | $(SORT) -rn > $@
 
 run/dsts_failed_uniq_combined.txt: $(patsubst %_links_converted_uniq.txt,%_dsts_failed_uniq.txt,$(ALL_LANG_CONVERTED_UNIQ))
 	@FILES=$$(./make_lang_targets.sh wikipedia ALL_LANG_CONVERTED_UNIQ | sed 's/_links_converted_uniq\.txt/_dsts_failed_uniq.txt/g'); \
 	if [ -z "$$FILES" ]; then echo "Error: no language files found" >&2; exit 1; fi; \
-	sort $$FILES | uniq -c | sort -rn > $@
+	$(SORT) $$FILES | uniq -c | $(SORT) -rn > $@
 
 # ============================================================
 # Format conversion to CSV
@@ -218,16 +221,16 @@ run/wkt/%_wikilinks.txt run/wkt/%_redirects.txt &: data/%wiktionary-latest-pages
 	@flock $(XML_PREPROC_LOCK) sh -c "pv -N '$*wiktionary' $< | lbzip2 -dc | $(WKT_PREPROC) $*"
 
 run/wkt/%_links_uniq.txt: run/wkt/%_wikilinks.txt
-	sort $< | uniq > $@
+	$(SORT) $< | uniq > $@
 
 run/wkt/links_uniq_combined.tsv run/wkt/entries.tsv &: $(ALL_WKT_LINKS) | build
 	@mkdir -p run/wkt
 	@FILES=$$(./make_lang_targets.sh wiktionary ALL_WKT_LINKS); \
 	if [ -z "$$FILES" ]; then echo "Error: no wiktionary files found" >&2; exit 1; fi; \
-	sort $$FILES | uniq -c | sort -rn | $(CONVERT_WKT)
+	$(SORT) $$FILES | uniq -c | $(SORT) -rn | $(CONVERT_WKT)
 
 run/wkt/entries_uniq.tsv: run/wkt/entries.tsv
-	sort $< | uniq > $@
+	$(SORT) $< | uniq > $@
 
 # ============================================================
 # DBpedia pipeline
@@ -242,7 +245,7 @@ run/dbp/combined_mappings.tsv: $(ALL_DBP_MAPPINGS)
 	@mkdir -p run/dbp
 	@FILES=$$(./make_lang_targets.sh dbpedia ALL_DBP_MAPPINGS); \
 	if [ -z "$$FILES" ]; then echo "Error: no dbpedia files found" >&2; exit 1; fi; \
-	sort $$FILES | uniq -c | sort -rn > $@
+	$(SORT) $$FILES | uniq -c | $(SORT) -rn > $@
 
 # ============================================================
 # Database loading
@@ -276,8 +279,8 @@ sense_sense_loaded: run/s2s_uniq.tsv
 	psql -d $(DBNAME) -c "\copy sense_sense FROM '$<' DELIMITER E'\t'" && touch $@
 
 wkt_loaded: run/wkt/entries_uniq.tsv run/wkt/links_uniq_combined.tsv
-	psql -d $(DBNAME) -c "\copy wkt_entries FROM 'run/wkt/entries_uniq.tsv' DELIMITER E'\t'" && \
-	psql -d $(DBNAME) -c "\copy wkt_links FROM 'run/wkt/links_uniq_combined.tsv' DELIMITER E'\t'" && \
+	psql -d $(DBNAME) -c "\copy wkt_entries FROM 'run/wkt/entries_uniq.tsv' WITH (FORMAT csv, DELIMITER E'\t')" && \
+	psql -d $(DBNAME) -c "\copy wkt_links FROM 'run/wkt/links_uniq_combined.tsv' WITH (FORMAT csv, DELIMITER E'\t')" && \
 	touch $@
 
 dbp_loaded: run/dbp/combined_mappings.tsv
