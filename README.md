@@ -8,20 +8,14 @@ The code in this repository was largely created by Anthropic Claude Opus 4.6 fro
 
 ## Getting Started
 
-### 1. Build the Rust binaries
-
-```
-cargo build --release
-```
-
-### 2. Set up the database
+### 1. Set up the database
 
 ```
 createdb algae
-psql -d algae -f queries/db_commands.sql
+make db_setup
 ```
 
-### 3. Download source data
+### 2. Download source data
 
 Download all dump files (uses `run/languages.json` for the language list):
 
@@ -45,12 +39,13 @@ Missing data files are also downloaded on demand when `make` needs them. If you 
 ln -s /path/to/your/existing/data data
 ```
 
-### 4. Discover languages
+### 3. Run the pipeline
 
 ```
-mkdir -p run
-target/release/discover_languages > run/languages.json
+make all
 ```
+
+This automatically builds the Rust binaries, discovers languages, and runs all processing steps sequentially. Each step uses internal parallelism (parallel sorts, multithreaded preprocessors, etc.) to saturate available cores.
 
 Optionally, create a `languages_override.json` in the project root to restrict processing to a subset:
 
@@ -62,18 +57,4 @@ Optionally, create a `languages_override.json` in the project root to restrict p
 }
 ```
 
-### 5. Run the pipeline
-
-```
-make -j$(nproc) all
-```
-
-Or target specific pieces:
-
-```
-make wp_links_loaded
-make wkt_loaded
-make dbp_loaded
-```
-
-If interrupted, re-running `make` will pick up where it left off.
+If interrupted, re-running `make all` will pick up where it left off.
