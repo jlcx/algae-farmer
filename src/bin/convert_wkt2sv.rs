@@ -68,7 +68,9 @@ fn main() -> Result<()> {
             let src = fields2[0].trim();
             let dst = fields2[1].trim();
 
-            if src.contains(':') || dst.contains(':') || src.contains('"') || dst.contains('"') {
+            if src.contains(':') || dst.contains(':') || src.contains('"') || dst.contains('"')
+                || src.contains('\t') || dst.contains('\t')
+            {
                 writeln!(rejected_out, "{trimmed}")?;
                 continue;
             }
@@ -82,7 +84,9 @@ fn main() -> Result<()> {
         let src = fields[0].trim();
         let dst = fields[1].trim();
 
-        if src.contains(':') || dst.contains(':') || src.contains('"') || dst.contains('"') {
+        if src.contains(':') || dst.contains(':') || src.contains('"') || dst.contains('"')
+            || src.contains('\t') || dst.contains('\t')
+        {
             writeln!(rejected_out, "{trimmed}")?;
             continue;
         }
@@ -92,10 +96,13 @@ fn main() -> Result<()> {
         entries_set.insert(dst.to_string());
     }
 
-    // Write unique entries
+    // Write unique entries, filtering out any containing tabs
+    // (tabs in headwords are data artifacts that break TSV loading)
     let mut entries_out = BufWriter::new(std::fs::File::create(&entries_path)?);
     for entry in &entries_set {
-        writeln!(entries_out, "{entry}")?;
+        if !entry.contains('\t') {
+            writeln!(entries_out, "{entry}")?;
+        }
     }
 
     log::info!(

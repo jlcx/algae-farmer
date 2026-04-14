@@ -93,6 +93,14 @@ CREATE TABLE IF NOT EXISTS wkt_links (
     PRIMARY KEY (src, dst)
 );
 
+-- DBpedia typed relationships (extracted from mappingbased-objects)
+CREATE TABLE IF NOT EXISTS dbp_links (
+    src VARCHAR(11),    -- source QID
+    dst VARCHAR(11),    -- destination QID
+    predicate VARCHAR,  -- DBpedia predicate URI
+    PRIMARY KEY (src, dst, predicate)
+);
+
 -- Indexes for common query patterns
 CREATE INDEX IF NOT EXISTS idx_wp_links_src ON wp_links (src);
 CREATE INDEX IF NOT EXISTS idx_wp_links_dst ON wp_links (dst);
