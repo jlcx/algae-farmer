@@ -7,20 +7,10 @@ JOBS ?= $(shell nproc)
 # Parallel sort with large buffer for better performance
 SORT := sort --parallel=$(JOBS) --buffer-size=4G
 
-# Step counter for progress tracking
-N_WP  := $(words $(ALL_LANG_WIKILINKS))
-N_WKT := $(words $(ALL_WKT_LINKS))
-N_DBP := $(words $(ALL_DBP_MAPPINGS))
-# Fixed steps: build, languages, commons, wd_preproc, lex_preproc, 6 wd sorts,
-#   wp_convert, 5 cross-lang combines, convert2sv, convert_wkt2sv, wkt entries_uniq,
-#   dbp combined, 11 db loads = 32
-# Per WP lang: wp_preproc + 5 sorts = 6; Per WKT lang: wkt_preproc + sort = 2; Per DBP lang: 1
-TOTAL_STEPS := $(shell echo $$(( 32 + $(N_WP) * 6 + $(N_WKT) * 2 + $(N_DBP) )))
-STEP_COUNTER := .step_counter
 # STEP: announce a step (no timing — for steps with pv or other progress)
 # TIMED: announce, run command, print elapsed time
-STEP = @./scripts/step.sh $(STEP_COUNTER) $(TOTAL_STEPS)
-TIMED = @./scripts/step.sh $(STEP_COUNTER) $(TOTAL_STEPS)
+STEP = @echo
+TIMED = @./scripts/timed.sh
 
 # Binaries (built via cargo)
 BIN_DIR := target/release
@@ -51,12 +41,12 @@ ALL_DBP_MAPPINGS        := $(shell ./make_lang_targets.sh dbpedia ALL_DBP_MAPPIN
 
 .PHONY: all clean build download check-downloads download-wikidata download-commons download-wikipedia download-wiktionary download-dbpedia wp_links_loaded wd_links_loaded wkt_loaded dbp_loaded
 
-all: wp_links_loaded wd_links_loaded wkt_loaded dbp_loaded
-	@rm -f $(STEP_COUNTER)
+all:
+	@$(MAKE) --no-print-directory -j1 run/languages.json
+	@$(MAKE) --no-print-directory -j1 wp_links_loaded wd_links_loaded wkt_loaded dbp_loaded
 
 build:
-	@rm -f $(STEP_COUNTER)
-	$(TIMED) "cargo build --release" -- cargo build --release
+	$(TIMED) "cargo build --release" -- env RUSTFLAGS="-C target-cpu=native" cargo build --release
 
 # ============================================================
 # Downloads
