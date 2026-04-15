@@ -1,8 +1,10 @@
 use algae_farmer::languages;
 use anyhow::Result;
+use crossbeam_channel::bounded;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
+use std::thread;
 use sysinfo::System;
 
 type QidDict = HashMap<String, HashMap<String, String>>;
@@ -183,8 +185,8 @@ fn process_language(
         if parts.len() != 2 {
             continue;
         }
-        let source_title = parts[0];
-        let link_target = parts[1];
+        let source_title = parts[0].trim();
+        let link_target = parts[1].trim();
 
         count += 1;
 
@@ -336,11 +338,40 @@ fn main() -> Result<()> {
     let qid_dict = load_qid_dict(run_dir, 80)?;
     let commons_files = load_commons_files(&run_dir.join("commons_files.txt"))?;
 
-    for lang in &languages {
-        log::info!("[{lang}] Starting link conversion");
-        process_language(lang, run_dir, &qid_dict, &commons_files, 5)?;
-    }
+    let num_workers = thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .max(1);
 
-    log::info!("All languages processed.");
-    Ok(())
+    log::info!("Using {num_workers} worker threads for {} languages", languages.len());
+
+    thread::scope(|s| {
+        let (tx, rx) = bounded::<&str>(num_workers * 2);
+
+        let mut handles = Vec::with_capacity(num_workers);
+        for _ in 0..num_workers {
+            let rx = rx.clone();
+            let qid_dict = &qid_dict;
+            let commons_files = &commons_files;
+            handles.push(s.spawn(move || -> Result<()> {
+                for lang in rx {
+                    log::info!("[{lang}] Starting link conversion");
+                    process_language(lang, run_dir, qid_dict, commons_files, 5)?;
+                }
+                Ok(())
+            }));
+        }
+        drop(rx);
+
+        for lang in &languages {
+            tx.send(lang.as_str()).unwrap();
+        }
+        drop(tx);
+
+        for handle in handles {
+            handle.join().unwrap()?;
+        }
+
+        Ok(())
+    })
 }
