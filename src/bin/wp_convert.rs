@@ -277,6 +277,7 @@ fn process_language(
             let prefix = &link_target[..colon_pos];
             let suffix = &link_target[colon_pos + 1..];
 
+            let suffix = suffix.trim();
             if (prefix == "d" || prefix == "D") && is_qid(suffix) {
                 writeln!(converted_out, "{src_qid}\t{}", suffix.to_uppercase())?;
                 converted += 1;
