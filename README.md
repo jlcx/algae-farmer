@@ -4,7 +4,7 @@ ALGAE (Aggregated Link Graph Available to Everyone) builds a unified, weighted l
 
 This pipeline processes Wikidata, Wikipedia, Wiktionary, Commons, and DBpedia dumps to produce a set of tables that enable queries like "which entity pairs are linked by 100+ Wikipedia languages but have no Wikidata statement?"
 
-The code in this repository was largely created by Anthropic Claude Opus 4.6 from SPEC.md, which in turn was distilled by Opus 4.6 from an older Python codebase of mine.
+The code in this repository was largely created by Anthropic Claude Opus 4.6 from SPEC.md, which in turn was distilled by Opus 4.6 from an older Python codebase of mine. Many iterations of improvement and debugging with Opus 4.6-4.7 have followed.
 
 ## Getting Started
 

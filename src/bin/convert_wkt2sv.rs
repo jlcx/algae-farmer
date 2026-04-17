@@ -17,6 +17,12 @@ fn main() -> Result<()> {
     let mut rejected_out = BufWriter::new(std::fs::File::create(&rejected_path)?);
     let mut bad_out = BufWriter::new(std::fs::File::create(&bad_path)?);
 
+    // Input is `sort $FILES | uniq -c`, so lines arrive ordered by the raw
+    // SRC\tDST key. Two raw lines that differ only in trim-equivalent whitespace
+    // land adjacent, and after our own trim they collapse to the same (src, dst).
+    // Sum their counts into one row so downstream doesn't see duplicate PKs.
+    let mut pending: Option<(String, String, u64)> = None;
+
     let stdin = io::stdin();
     for line in stdin.lock().lines() {
         let line = match line {
@@ -32,23 +38,20 @@ fn main() -> Result<()> {
             continue;
         }
 
-        // Filter out lines with colons (namespace prefixes), double quotes, or too long
         if trimmed.len() > 384 {
             writeln!(rejected_out, "{trimmed}")?;
             continue;
         }
 
-        // Parse uniq -c format: "   count src\tdst" or "   count src dst"
+        // Parse uniq -c format: "   count src\tdst" (whitespace-separated count,
+        // tab-separated fields; fall back to whitespace split if no tab).
         let parts: Vec<&str> = trimmed.splitn(2, |c: char| c.is_whitespace()).collect();
         if parts.len() != 2 {
             writeln!(bad_out, "{trimmed}")?;
             continue;
         }
 
-        let count_str = parts[0].trim();
-        let rest = parts[1].trim();
-
-        let count: u64 = match count_str.parse() {
+        let count: u64 = match parts[0].trim().parse() {
             Ok(c) => c,
             Err(_) => {
                 writeln!(bad_out, "{trimmed}")?;
@@ -56,33 +59,21 @@ fn main() -> Result<()> {
             }
         };
 
-        // Split rest into src and dst (tab-separated)
-        let fields: Vec<&str> = rest.splitn(2, '\t').collect();
-        if fields.len() != 2 {
-            // Try whitespace split
-            let fields2: Vec<&str> = rest.splitn(2, |c: char| c.is_whitespace()).collect();
-            if fields2.len() != 2 {
-                writeln!(bad_out, "{trimmed}")?;
-                continue;
+        let rest = parts[1].trim();
+        let (src, dst) = {
+            let tab_fields: Vec<&str> = rest.splitn(2, '\t').collect();
+            if tab_fields.len() == 2 {
+                (tab_fields[0].trim(), tab_fields[1].trim())
+            } else {
+                let ws_fields: Vec<&str> =
+                    rest.splitn(2, |c: char| c.is_whitespace()).collect();
+                if ws_fields.len() != 2 {
+                    writeln!(bad_out, "{trimmed}")?;
+                    continue;
+                }
+                (ws_fields[0].trim(), ws_fields[1].trim())
             }
-            let src = fields2[0].trim();
-            let dst = fields2[1].trim();
-
-            if src.contains(':') || dst.contains(':') || src.contains('"') || dst.contains('"')
-                || src.contains('\t') || dst.contains('\t')
-            {
-                writeln!(rejected_out, "{trimmed}")?;
-                continue;
-            }
-
-            writeln!(links_out, "{src}\t{dst}\t{count}")?;
-            entries_set.insert(src.to_string());
-            entries_set.insert(dst.to_string());
-            continue;
-        }
-
-        let src = fields[0].trim();
-        let dst = fields[1].trim();
+        };
 
         if src.contains(':') || dst.contains(':') || src.contains('"') || dst.contains('"')
             || src.contains('\t') || dst.contains('\t')
@@ -91,9 +82,25 @@ fn main() -> Result<()> {
             continue;
         }
 
-        writeln!(links_out, "{src}\t{dst}\t{count}")?;
-        entries_set.insert(src.to_string());
-        entries_set.insert(dst.to_string());
+        match pending.as_mut() {
+            Some((psrc, pdst, pcount)) if psrc == src && pdst == dst => {
+                *pcount += count;
+            }
+            _ => {
+                if let Some((psrc, pdst, pcount)) = pending.take() {
+                    writeln!(links_out, "{psrc}\t{pdst}\t{pcount}")?;
+                    entries_set.insert(psrc);
+                    entries_set.insert(pdst);
+                }
+                pending = Some((src.to_string(), dst.to_string(), count));
+            }
+        }
+    }
+
+    if let Some((psrc, pdst, pcount)) = pending.take() {
+        writeln!(links_out, "{psrc}\t{pdst}\t{pcount}")?;
+        entries_set.insert(psrc);
+        entries_set.insert(pdst);
     }
 
     // Write unique entries, filtering out any containing tabs
@@ -105,11 +112,7 @@ fn main() -> Result<()> {
         }
     }
 
-    log::info!(
-        "Done. {} links, {} unique entries",
-        0, // we don't count here but it's logged
-        entries_set.len()
-    );
+    log::info!("Done. {} unique entries", entries_set.len());
 
     Ok(())
 }

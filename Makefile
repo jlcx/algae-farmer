@@ -5,7 +5,7 @@ SHELL := /bin/bash
 JOBS ?= $(shell nproc)
 
 # Parallel sort with large buffer for better performance
-SORT := sort --parallel=$(JOBS) --buffer-size=4G
+SORT := LC_ALL=C sort --parallel=$(JOBS) --buffer-size=4G
 
 # STEP: announce a step (no timing — for steps with pv or other progress)
 # TIMED: announce, run command, print elapsed time
@@ -39,11 +39,11 @@ ALL_DBP_MAPPINGS        := $(shell ./make_lang_targets.sh dbpedia ALL_DBP_MAPPIN
 # Top-level targets
 # ============================================================
 
-.PHONY: all clean build download check-downloads download-wikidata download-commons download-wikipedia download-wiktionary download-dbpedia wp_links_loaded wd_links_loaded wkt_loaded dbp_loaded
+.PHONY: all clean build download check-downloads download-wikidata download-commons download-wikipedia download-wiktionary download-dbpedia wp_links_loaded wd_links_loaded wd_entities_loaded wd_dates_loaded lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded wkt_loaded dbp_loaded
 
 all:
 	@$(MAKE) --no-print-directory -j1 run/languages.json
-	@$(MAKE) --no-print-directory -j1 wp_links_loaded wd_links_loaded wkt_loaded dbp_loaded
+	@$(MAKE) --no-print-directory -j1 wp_links_loaded wd_links_loaded wd_entities_loaded wd_dates_loaded lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded wkt_loaded dbp_loaded
 
 build:
 	$(TIMED) "cargo build --release" -- env RUSTFLAGS="-C target-cpu=native" cargo build --release
@@ -246,7 +246,7 @@ run/wkt/links_uniq_combined.tsv run/wkt/entries.tsv &: $(ALL_WKT_LINKS) | build
 		mkdir -p run/wkt; \
 		FILES=$$(./make_lang_targets.sh wiktionary ALL_WKT_LINKS); \
 		if [ -z "$$FILES" ]; then echo "Error: no wiktionary files found" >&2; exit 1; fi; \
-		$(SORT) $$FILES | uniq -c | $(SORT) -rn | $(CONVERT_WKT)'
+		$(SORT) $$FILES | uniq -c | $(CONVERT_WKT)'
 
 run/wkt/entries_uniq.tsv: run/wkt/entries.tsv
 	$(TIMED) "sort/uniq wkt/entries" -- sh -c '$(SORT) $< | uniq > $@'
