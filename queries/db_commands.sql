@@ -93,6 +93,37 @@ CREATE TABLE IF NOT EXISTS wkt_links (
     PRIMARY KEY (src, dst)
 );
 
+-- Abstract Wikipedia main-namespace pages (one row per QID)
+CREATE TABLE IF NOT EXISTS aw_entries (
+    qid VARCHAR(11),
+    PRIMARY KEY (qid)
+);
+
+-- Q/Z-IDs referenced inside Abstract Wikipedia pages
+-- (K-suffixes stripped: e.g. Z825K1 stored as Z825)
+CREATE TABLE IF NOT EXISTS aw_refs (
+    src_qid VARCHAR(11),
+    ref     VARCHAR(16),
+    PRIMARY KEY (src_qid, ref)
+);
+
+-- Wikifunctions Z-objects (one row per ZID)
+CREATE TABLE IF NOT EXISTS wf_objects (
+    zid VARCHAR(16),
+    PRIMARY KEY (zid)
+);
+
+-- Wikifunctions multilingual labels and aliases
+-- lang: Wikifunctions natural-language ZID (e.g. Z1002 = English)
+-- kind: 'L' persistent label (Z2K3), 'A' alias (Z2K4)
+CREATE TABLE IF NOT EXISTS wf_labels (
+    zid   VARCHAR(16),
+    lang  VARCHAR(16),
+    kind  CHAR(1),
+    label VARCHAR,
+    PRIMARY KEY (zid, lang, kind, label)
+);
+
 -- DBpedia typed relationships (extracted from mappingbased-objects)
 CREATE TABLE IF NOT EXISTS dbp_links (
     src VARCHAR(11),    -- source QID

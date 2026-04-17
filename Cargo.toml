@@ -62,6 +62,14 @@ name = "wkt_preproc"
 path = "src/bin/wkt_preproc.rs"
 
 [[bin]]
+name = "aw_preproc"
+path = "src/bin/aw_preproc.rs"
+
+[[bin]]
+name = "wf_preproc"
+path = "src/bin/wf_preproc.rs"
+
+[[bin]]
 name = "dbp_convert"
 path = "src/bin/dbp_convert.rs"
 

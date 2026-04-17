@@ -23,6 +23,8 @@ WP_CONVERT := $(BIN_DIR)/wp_convert
 CONVERT2SV := $(BIN_DIR)/convert2sv
 WKT_PREPROC:= $(BIN_DIR)/wkt_preproc
 CONVERT_WKT:= $(BIN_DIR)/convert_wkt2sv
+AW_PREPROC := $(BIN_DIR)/aw_preproc
+WF_PREPROC := $(BIN_DIR)/wf_preproc
 DBP_CONVERT:= $(BIN_DIR)/dbp_convert
 DB_LOAD    := $(BIN_DIR)/db_load
 
@@ -39,11 +41,11 @@ ALL_DBP_MAPPINGS        := $(shell ./make_lang_targets.sh dbpedia ALL_DBP_MAPPIN
 # Top-level targets
 # ============================================================
 
-.PHONY: all clean build download check-downloads download-wikidata download-commons download-wikipedia download-wiktionary download-dbpedia wp_links_loaded wd_links_loaded wd_entities_loaded wd_dates_loaded lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded wkt_loaded dbp_loaded
+.PHONY: all clean build download check-downloads download-wikidata download-commons download-wikipedia download-wiktionary download-abstractwiki download-wikifunctions download-dbpedia wp_links_loaded wd_links_loaded wd_entities_loaded wd_dates_loaded lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded wkt_loaded aw_loaded wf_loaded dbp_loaded
 
 all:
 	@$(MAKE) --no-print-directory -j1 run/languages.json
-	@$(MAKE) --no-print-directory -j1 wp_links_loaded wd_links_loaded wd_entities_loaded wd_dates_loaded lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded wkt_loaded dbp_loaded
+	@$(MAKE) --no-print-directory -j1 wp_links_loaded wd_links_loaded wd_entities_loaded wd_dates_loaded lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded wkt_loaded aw_loaded wf_loaded dbp_loaded
 
 build:
 	$(TIMED) "cargo build --release" -- env RUSTFLAGS="-C target-cpu=native" cargo build --release
@@ -67,6 +69,12 @@ download-wikipedia: run/languages.json
 download-wiktionary: run/languages.json
 	./scripts/download.sh wiktionary
 
+download-abstractwiki:
+	./scripts/download.sh abstractwiki
+
+download-wikifunctions:
+	./scripts/download.sh wikifunctions
+
 download-dbpedia: run/languages.json
 	./scripts/download.sh dbpedia
 
@@ -89,6 +97,12 @@ data/latest-lexemes.json.bz2:
 
 data/commonswiki-latest-pages-articles-multistream-index.txt.bz2:
 	@flock $(DOWNLOAD_LOCK) ./scripts/download.sh commons
+
+data/abstractwiki-latest-pages-articles-multistream.xml.bz2:
+	@flock $(DOWNLOAD_LOCK) ./scripts/download.sh abstractwiki
+
+data/wikifunctionswiki-latest-pages-articles-multistream.xml.bz2:
+	@flock $(DOWNLOAD_LOCK) ./scripts/download.sh wikifunctions
 
 data/%wiki-latest-pages-articles-multistream.xml.bz2:
 	@flock $(DOWNLOAD_LOCK) ./scripts/download.sh wikipedia-single $*
@@ -250,6 +264,36 @@ run/wkt/links_uniq_combined.tsv run/wkt/entries.tsv &: $(ALL_WKT_LINKS) | build
 
 run/wkt/entries_uniq.tsv: run/wkt/entries.tsv
 	$(TIMED) "sort/uniq wkt/entries" -- sh -c '$(SORT) $< | uniq > $@'
+
+# ============================================================
+# Abstract Wikipedia pipeline
+# ============================================================
+
+run/aw/entries.tsv run/aw/refs.tsv &: data/abstractwiki-latest-pages-articles-multistream.xml.bz2 | build
+	$(STEP) "aw_preproc"
+	@mkdir -p run/aw
+	@pv -N abstractwiki $< | lbzip2 -dc | $(AW_PREPROC)
+
+run/aw/entries_uniq.tsv: run/aw/entries.tsv
+	$(TIMED) "sort/uniq aw/entries" -- sh -c '$(SORT) -u $< > $@'
+
+run/aw/refs_uniq.tsv: run/aw/refs.tsv
+	$(TIMED) "sort/uniq aw/refs" -- sh -c '$(SORT) -u $< > $@'
+
+# ============================================================
+# Wikifunctions pipeline
+# ============================================================
+
+run/wf/objects.tsv run/wf/labels.tsv &: data/wikifunctionswiki-latest-pages-articles-multistream.xml.bz2 | build
+	$(STEP) "wf_preproc"
+	@mkdir -p run/wf
+	@pv -N wikifunctions $< | lbzip2 -dc | $(WF_PREPROC)
+
+run/wf/objects_uniq.tsv: run/wf/objects.tsv
+	$(TIMED) "sort/uniq wf/objects" -- sh -c '$(SORT) -u $< > $@'
+
+run/wf/labels_uniq.tsv: run/wf/labels.tsv
+	$(TIMED) "sort/uniq wf/labels" -- sh -c '$(SORT) -u $< > $@'
 
 # ============================================================
 # DBpedia pipeline
@@ -414,6 +458,38 @@ wkt_loaded: run/wkt/entries_uniq.tsv run/wkt/links_uniq_combined.tsv
 			ALTER TABLE wkt_links ADD PRIMARY KEY (src, dst); \
 			" && touch $@'
 
+aw_loaded: run/aw/entries_uniq.tsv run/aw/refs_uniq.tsv
+	$(TIMED) "load aw_entries + aw_refs" -- sh -c '\
+		$(PSQL) -c " \
+			ALTER TABLE aw_entries DROP CONSTRAINT IF EXISTS aw_entries_pkey; \
+			ALTER TABLE aw_refs DROP CONSTRAINT IF EXISTS aw_refs_pkey; \
+			TRUNCATE aw_entries; \
+			TRUNCATE aw_refs; \
+			" && \
+		$(PSQL) -c "\copy aw_entries FROM '"'"'run/aw/entries_uniq.tsv'"'"' WITH (FORMAT csv, DELIMITER E'"'"'\t'"'"')" && \
+		$(PSQL) -c "\copy aw_refs FROM '"'"'run/aw/refs_uniq.tsv'"'"' WITH (FORMAT csv, DELIMITER E'"'"'\t'"'"')" && \
+		$(PSQL) -c " \
+			SET maintenance_work_mem = '"'"'4GB'"'"'; \
+			ALTER TABLE aw_entries ADD PRIMARY KEY (qid); \
+			ALTER TABLE aw_refs ADD PRIMARY KEY (src_qid, ref); \
+			" && touch $@'
+
+wf_loaded: run/wf/objects_uniq.tsv run/wf/labels_uniq.tsv
+	$(TIMED) "load wf_objects + wf_labels" -- sh -c '\
+		$(PSQL) -c " \
+			ALTER TABLE wf_objects DROP CONSTRAINT IF EXISTS wf_objects_pkey; \
+			ALTER TABLE wf_labels DROP CONSTRAINT IF EXISTS wf_labels_pkey; \
+			TRUNCATE wf_objects; \
+			TRUNCATE wf_labels; \
+			" && \
+		$(PSQL) -c "\copy wf_objects FROM '"'"'run/wf/objects_uniq.tsv'"'"' WITH (FORMAT csv, DELIMITER E'"'"'\t'"'"')" && \
+		$(PSQL) -c "\copy wf_labels FROM '"'"'run/wf/labels_uniq.tsv'"'"' WITH (FORMAT csv, DELIMITER E'"'"'\t'"'"')" && \
+		$(PSQL) -c " \
+			SET maintenance_work_mem = '"'"'4GB'"'"'; \
+			ALTER TABLE wf_objects ADD PRIMARY KEY (zid); \
+			ALTER TABLE wf_labels ADD PRIMARY KEY (zid, lang, kind, label); \
+			" && touch $@'
+
 dbp_loaded: run/dbp/combined_mappings.tsv
 	$(TIMED) "load dbp_links" -- sh -c '\
 		$(PSQL) -c " \
@@ -440,6 +516,6 @@ db_setup:
 
 clean:
 	rm -rf run/
-	rm -f wp_links_loaded wd_links_loaded wd_entities_loaded wd_dates_loaded
+	rm -f wp_links_loaded wd_links_loaded wd_entities_loaded wd_dates_loaded wkt_loaded aw_loaded wf_loaded dbp_loaded lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded
 	rm -f lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded
 	rm -f wkt_loaded dbp_loaded

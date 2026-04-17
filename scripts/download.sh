@@ -7,6 +7,8 @@
 #   ./scripts/download.sh wiktionary      # just Wiktionary dumps
 #   ./scripts/download.sh wikidata        # Wikidata entity + lexeme dumps
 #   ./scripts/download.sh commons         # Commons multistream index
+#   ./scripts/download.sh abstractwiki    # Abstract Wikipedia dump
+#   ./scripts/download.sh wikifunctions   # Wikifunctions dump
 #   ./scripts/download.sh dbpedia         # DBpedia mapping files
 #
 # Reads language lists from run/languages.json (with languages_override.json
@@ -126,6 +128,22 @@ download_wiktionary() {
     done
 }
 
+download_abstractwiki() {
+    echo "=== Downloading Abstract Wikipedia dump ==="
+    polite_wget \
+        "https://dumps.wikimedia.org/abstractwiki/latest/abstractwiki-latest-pages-articles-multistream.xml.bz2" \
+        "$DATA_DIR" \
+        || { echo "Error: failed to download abstractwiki dump" >&2; return 1; }
+}
+
+download_wikifunctions() {
+    echo "=== Downloading Wikifunctions dump ==="
+    polite_wget \
+        "https://dumps.wikimedia.org/wikifunctionswiki/latest/wikifunctionswiki-latest-pages-articles-multistream.xml.bz2" \
+        "$DATA_DIR" \
+        || { echo "Error: failed to download wikifunctionswiki dump" >&2; return 1; }
+}
+
 download_dbpedia() {
     local langs
     langs=$(get_langs dbpedia)
@@ -174,18 +192,22 @@ case "$TARGET" in
         download_commons
         download_wikipedia
         download_wiktionary
+        download_abstractwiki
+        download_wikifunctions
         download_dbpedia
         ;;
     wikidata)           download_wikidata ;;
     commons)            download_commons ;;
     wikipedia)          download_wikipedia ;;
     wiktionary)         download_wiktionary ;;
+    abstractwiki)       download_abstractwiki ;;
+    wikifunctions)      download_wikifunctions ;;
     dbpedia)            download_dbpedia ;;
     wikipedia-single)   download_wikipedia_single "${2:?language code required}" ;;
     wiktionary-single)  download_wiktionary_single "${2:?language code required}" ;;
     *)
         echo "Unknown target: $TARGET" >&2
-        echo "Usage: $0 [all|wikidata|commons|wikipedia|wiktionary|dbpedia|wikipedia-single <lang>|wiktionary-single <lang>]" >&2
+        echo "Usage: $0 [all|wikidata|commons|wikipedia|wiktionary|abstractwiki|wikifunctions|dbpedia|wikipedia-single <lang>|wiktionary-single <lang>]" >&2
         exit 1
         ;;
 esac
