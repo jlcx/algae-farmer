@@ -80,7 +80,3 @@ path = "src/bin/microscope.rs"
 [[bin]]
 name = "get_featured"
 path = "src/bin/get_featured.rs"
-
-[[bin]]
-name = "db_load"
-path = "src/bin/db_load.rs"

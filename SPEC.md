@@ -254,7 +254,7 @@ Converts the combined Wiktionary link file into TSV and a word list. Filters out
 - `wkt_links_rejected.txt` -- lines that failed the filter
 - `wkt_links_bad.txt` -- lines that caused exceptions
 
-#### 2.8.4 Database loading (`db_load_code`)
+#### 2.8.4 Database loading
 
 Loads `entries_uniq.tsv` into the `wkt_entries` table and `links_uniq_combined.tsv` into the `wkt_links` table via PostgreSQL `\copy`, consistent with all other table loading.
 
@@ -671,7 +671,7 @@ The Wiktionary and DBpedia pipelines are integrated into the same `Makefile` as 
                                        |
                                   entries.tsv + links.tsv
                                        |
-                                 db_load_code
+                                  psql \copy
                                        |
                                   [wkt_entries]
 
@@ -719,7 +719,7 @@ The Wiktionary and DBpedia pipelines are integrated into the same `Makefile` as 
 | Dependency | Used by | Purpose |
 |---|---|---|
 | XML streaming parser library | `wp_preproc`, `wkt_preproc` | Streaming XML parsing |
-| PostgreSQL client library | `microscope`, `db_load_code` | PostgreSQL access |
+| PostgreSQL client library | `microscope` | PostgreSQL access |
 | HTTP client library | `get_featured`, `discover_languages` | HTTP requests |
 | PostgreSQL | Database | Storage and querying |
 | `sort`, `uniq`, `cut` (coreutils) | Makefile recipes | Deduplication and counting |

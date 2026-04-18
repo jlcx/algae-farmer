@@ -26,7 +26,6 @@ CONVERT_WKT:= $(BIN_DIR)/convert_wkt2sv
 AW_PREPROC := $(BIN_DIR)/aw_preproc
 WF_PREPROC := $(BIN_DIR)/wf_preproc
 DBP_CONVERT:= $(BIN_DIR)/dbp_convert
-DB_LOAD    := $(BIN_DIR)/db_load
 
 DBNAME ?= algae
 
