@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS wd_dates (
     precision SMALLINT,         -- Wikidata time precision (0=billion years .. 14=seconds)
     source_property VARCHAR(7) DEFAULT '', -- if nested: the parent claim's property; '' if top-level
     source_target VARCHAR(11) DEFAULT '',  -- if nested: the parent claim's target QID; '' if top-level
-    PRIMARY KEY (qid, property, time_value, source_property, source_target)
+    PRIMARY KEY (qid, property, time_value, precision, source_property, source_target)
 );
 
 -- Entity list with labels and Wikipedia coverage
