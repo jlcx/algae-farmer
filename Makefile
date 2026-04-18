@@ -140,6 +140,12 @@ run/items.csv run/links.csv run/wd_labels.tsv run/date_claims.csv &: data/latest
 run/links_uniq.csv: run/links.csv
 	$(TIMED) "sort/uniq links.csv" -- sh -c '$(SORT) $< | uniq > $@'
 
+run/date_claims_uniq.csv: run/date_claims.csv
+	$(TIMED) "sort/uniq date_claims.csv" -- sh -c '\
+		$(SORT) -t, -k1,1 -k2,2 -k3,3 -k5,5 -k6,6 -k4,4nr $< \
+		| awk -F, '"'"'{k=$$1 FS $$2 FS $$3 FS $$5 FS $$6; if (k != prev) {print; prev=k}}'"'"' \
+		> $@'
+
 # ============================================================
 # Wikidata lexeme preprocessing
 # ============================================================
@@ -368,14 +374,14 @@ wd_entities_loaded: run/items.csv
 			CREATE INDEX idx_wd_entities_qid ON wd_entities (qid); \
 			" && touch $@'
 
-wd_dates_loaded: run/date_claims.csv
+wd_dates_loaded: run/date_claims_uniq.csv
 	$(TIMED) "load wd_dates" -- sh -c '\
 		$(PSQL) -c " \
 			DROP INDEX IF EXISTS idx_wd_dates_qid; \
 			ALTER TABLE wd_dates DROP CONSTRAINT IF EXISTS wd_dates_pkey; \
 			TRUNCATE wd_dates; \
 			" && \
-		$(PSQL) -c "\copy wd_dates FROM '"'"'$<'"'"' CSV" && \
+		$(PSQL) -c "\copy wd_dates FROM '"'"'$<'"'"' WITH (FORMAT csv, FORCE_NOT_NULL (source_property, source_target))" && \
 		$(PSQL) -c " \
 			SET maintenance_work_mem = '"'"'4GB'"'"'; \
 			ALTER TABLE wd_dates ADD PRIMARY KEY (qid, property, time_value, source_property, source_target); \
