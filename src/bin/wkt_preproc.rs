@@ -27,8 +27,7 @@ enum PageOutput {
     Links { title: String, links: Vec<String> },
 }
 
-fn extract_wikilinks(text: &str) -> Vec<String> {
-    let re = Regex::new(r"\[\[([^\[\]]*)\]\]").unwrap();
+fn extract_wikilinks(re: &Regex, text: &str) -> Vec<String> {
     let mut links = Vec::new();
 
     for cap in re.captures_iter(text) {
@@ -98,6 +97,7 @@ fn main() -> Result<()> {
         let out_tx = out_tx.clone();
 
         let handle = thread::spawn(move || {
+            let re = Regex::new(r"\[\[([^\[\]]*)\]\]").unwrap();
             for page in page_rx {
                 let output = if let Some(target) = page.redirect_target {
                     PageOutput::Redirect {
@@ -107,7 +107,7 @@ fn main() -> Result<()> {
                 } else {
                     PageOutput::Links {
                         title: page.title,
-                        links: extract_wikilinks(&page.text),
+                        links: extract_wikilinks(&re, &page.text),
                     }
                 };
 
