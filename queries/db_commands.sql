@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS lemma_lexeme (
     lang VARCHAR,
     lemma VARCHAR,
     lid VARCHAR,
-    PRIMARY KEY (lang, lemma)
+    PRIMARY KEY (lang, lemma, lid)
 );
 
 -- Form-to-lexeme mapping

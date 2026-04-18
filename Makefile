@@ -393,7 +393,7 @@ lemma_loaded: run/from_lemmas_uniq.tsv
 		$(PSQL) -c "\copy lemma_lexeme FROM '"'"'$<'"'"' DELIMITER E'"'"'\t'"'"'" && \
 		$(PSQL) -c " \
 			SET maintenance_work_mem = '"'"'4GB'"'"'; \
-			ALTER TABLE lemma_lexeme ADD PRIMARY KEY (lang, lemma); \
+			ALTER TABLE lemma_lexeme ADD PRIMARY KEY (lang, lemma, lid); \
 			" && touch $@'
 
 form_loaded: run/from_forms_uniq.tsv

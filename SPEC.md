@@ -373,7 +373,7 @@ CREATE TABLE lemma_lexeme (
     lang VARCHAR,
     lemma VARCHAR,
     lid VARCHAR,
-    PRIMARY KEY (lang, lemma)
+    PRIMARY KEY (lang, lemma, lid)
 );
 -- Loaded from: from_lemmas.tsv (TSV)
 
