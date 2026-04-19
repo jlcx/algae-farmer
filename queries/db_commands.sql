@@ -28,6 +28,16 @@ CREATE TABLE IF NOT EXISTS wd_entities (
     PRIMARY KEY (qid)
 );
 
+-- Per-language labels for Wikidata entities.
+-- lang: language code from label_langs, or 'best' (chosen display label),
+--       or 'doi' (P356 DOI value, first claim only)
+CREATE TABLE IF NOT EXISTS wd_labels (
+    lang VARCHAR,
+    label VARCHAR,
+    qid VARCHAR(11),
+    PRIMARY KEY (lang, label, qid)
+);
+
 -- Cross-language Wikipedia link consensus
 CREATE TABLE IF NOT EXISTS wp_links (
     src VARCHAR(11),    -- source QID
@@ -140,3 +150,4 @@ CREATE INDEX IF NOT EXISTS idx_wd_links_src ON wd_links (src);
 CREATE INDEX IF NOT EXISTS idx_wd_links_dst ON wd_links (dst);
 CREATE INDEX IF NOT EXISTS idx_wd_dates_qid ON wd_dates (qid);
 CREATE INDEX IF NOT EXISTS idx_wd_entities_qid ON wd_entities (qid);
+CREATE INDEX IF NOT EXISTS idx_wd_labels_qid ON wd_labels (qid);

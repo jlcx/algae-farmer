@@ -40,11 +40,11 @@ ALL_DBP_MAPPINGS        := $(shell ./make_lang_targets.sh dbpedia ALL_DBP_MAPPIN
 # Top-level targets
 # ============================================================
 
-.PHONY: all clean build download check-downloads download-wikidata download-commons download-wikipedia download-wiktionary download-abstractwiki download-wikifunctions download-dbpedia wp_links_loaded wd_links_loaded wd_entities_loaded wd_dates_loaded lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded wkt_loaded aw_loaded wf_loaded dbp_loaded
+.PHONY: all clean build download check-downloads download-wikidata download-commons download-wikipedia download-wiktionary download-abstractwiki download-wikifunctions download-dbpedia wp_links_loaded wd_links_loaded wd_entities_loaded wd_labels_loaded wd_dates_loaded lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded wkt_loaded aw_loaded wf_loaded dbp_loaded
 
 all:
 	@$(MAKE) --no-print-directory -j1 run/languages.json
-	@$(MAKE) --no-print-directory -j1 wp_links_loaded wd_links_loaded wd_entities_loaded wd_dates_loaded lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded wkt_loaded aw_loaded wf_loaded dbp_loaded
+	@$(MAKE) --no-print-directory -j1 wp_links_loaded wd_links_loaded wd_entities_loaded wd_labels_loaded wd_dates_loaded lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded wkt_loaded aw_loaded wf_loaded dbp_loaded
 
 build:
 	$(TIMED) "cargo build --release" -- env RUSTFLAGS="-C target-cpu=native" cargo build --release
@@ -370,6 +370,20 @@ wd_entities_loaded: run/items.csv
 			CREATE INDEX idx_wd_entities_qid ON wd_entities (qid); \
 			" && touch $@'
 
+wd_labels_loaded: run/wd_labels.tsv
+	$(TIMED) "load wd_labels" -- sh -c '\
+		$(PSQL) -c " \
+			DROP INDEX IF EXISTS idx_wd_labels_qid; \
+			ALTER TABLE wd_labels DROP CONSTRAINT IF EXISTS wd_labels_pkey; \
+			TRUNCATE wd_labels; \
+			" && \
+		$(PSQL) -c "\copy wd_labels FROM '"'"'$<'"'"' WITH (FORMAT csv, DELIMITER E'"'"'\t'"'"', QUOTE E'"'"'\b'"'"')" && \
+		$(PSQL) -c " \
+			SET maintenance_work_mem = '"'"'4GB'"'"'; \
+			ALTER TABLE wd_labels ADD PRIMARY KEY (lang, label, qid); \
+			CREATE INDEX idx_wd_labels_qid ON wd_labels (qid); \
+			" && touch $@'
+
 wd_dates_loaded: run/date_claims_uniq.csv
 	$(TIMED) "load wd_dates" -- sh -c '\
 		$(PSQL) -c " \
@@ -518,6 +532,6 @@ db_setup:
 
 clean:
 	rm -rf run/
-	rm -f wp_links_loaded wd_links_loaded wd_entities_loaded wd_dates_loaded wkt_loaded aw_loaded wf_loaded dbp_loaded lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded
+	rm -f wp_links_loaded wd_links_loaded wd_entities_loaded wd_labels_loaded wd_dates_loaded wkt_loaded aw_loaded wf_loaded dbp_loaded lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded
 	rm -f lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded
 	rm -f wkt_loaded dbp_loaded
