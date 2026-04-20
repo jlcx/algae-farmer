@@ -40,11 +40,11 @@ ALL_DBP_MAPPINGS        := $(shell ./make_lang_targets.sh dbpedia ALL_DBP_MAPPIN
 # Top-level targets
 # ============================================================
 
-.PHONY: all clean build download check-downloads download-wikidata download-commons download-wikipedia download-wiktionary download-abstractwiki download-wikifunctions download-dbpedia wp_links_loaded wd_links_loaded wd_entities_loaded wd_labels_loaded wd_dates_loaded lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded wkt_loaded aw_loaded wf_loaded dbp_loaded
+.PHONY: all clean build download check-downloads download-wikidata download-commons download-wikipedia download-wiktionary download-abstractwiki download-wikifunctions download-dbpedia wp_links_loaded wd_links_loaded wd_entities_loaded wd_labels_loaded wd_dates_loaded wd_coords_loaded lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded wkt_loaded aw_loaded wf_loaded dbp_loaded
 
 all:
 	@$(MAKE) --no-print-directory -j1 run/languages.json
-	@$(MAKE) --no-print-directory -j1 wp_links_loaded wd_links_loaded wd_entities_loaded wd_labels_loaded wd_dates_loaded lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded wkt_loaded aw_loaded wf_loaded dbp_loaded
+	@$(MAKE) --no-print-directory -j1 wp_links_loaded wd_links_loaded wd_entities_loaded wd_labels_loaded wd_dates_loaded wd_coords_loaded lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded wkt_loaded aw_loaded wf_loaded dbp_loaded
 
 build:
 	$(TIMED) "cargo build --release" -- env RUSTFLAGS="-C target-cpu=native" cargo build --release
@@ -130,8 +130,8 @@ run/commons_files.txt: data/commonswiki-latest-pages-articles-multistream-index.
 # Wikidata entity preprocessing
 # ============================================================
 
-# wd_preproc produces all four outputs in one pass
-run/items.csv run/links.csv run/wd_labels.tsv run/date_claims.csv &: data/latest-all.json.gz run/languages.json | build
+# wd_preproc produces all five outputs in one pass
+run/items.csv run/links.csv run/wd_labels.tsv run/date_claims.csv run/coords.csv &: data/latest-all.json.gz run/languages.json | build
 	$(STEP) "wd_preproc"
 	@mkdir -p run
 	@pv -N wikidata $< | zcat | $(WD_PREPROC)
@@ -141,6 +141,9 @@ run/links_uniq.csv: run/links.csv
 
 run/date_claims_uniq.csv: run/date_claims.csv
 	$(TIMED) "sort/uniq date_claims.csv" -- sh -c '$(SORT) $< | uniq > $@'
+
+run/coords_uniq.csv: run/coords.csv
+	$(TIMED) "sort/uniq coords.csv" -- sh -c '$(SORT) $< | uniq > $@'
 
 # ============================================================
 # Wikidata lexeme preprocessing
@@ -398,6 +401,20 @@ wd_dates_loaded: run/date_claims_uniq.csv
 			CREATE INDEX idx_wd_dates_qid ON wd_dates (qid); \
 			" && touch $@'
 
+wd_coords_loaded: run/coords_uniq.csv
+	$(TIMED) "load wd_coords" -- sh -c '\
+		$(PSQL) -c " \
+			DROP INDEX IF EXISTS idx_wd_coords_qid; \
+			ALTER TABLE wd_coords DROP CONSTRAINT IF EXISTS wd_coords_pkey; \
+			TRUNCATE wd_coords; \
+			" && \
+		$(PSQL) -c "\copy wd_coords FROM '"'"'$<'"'"' WITH (FORMAT csv, FORCE_NOT_NULL (globe))" && \
+		$(PSQL) -c " \
+			SET maintenance_work_mem = '"'"'4GB'"'"'; \
+			ALTER TABLE wd_coords ADD PRIMARY KEY (qid, latitude, longitude, globe); \
+			CREATE INDEX idx_wd_coords_qid ON wd_coords (qid); \
+			" && touch $@'
+
 lemma_loaded: run/from_lemmas_uniq.tsv
 	$(TIMED) "load lemma_lexeme" -- sh -c '\
 		$(PSQL) -c " \
@@ -532,6 +549,6 @@ db_setup:
 
 clean:
 	rm -rf run/
-	rm -f wp_links_loaded wd_links_loaded wd_entities_loaded wd_labels_loaded wd_dates_loaded wkt_loaded aw_loaded wf_loaded dbp_loaded lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded
+	rm -f wp_links_loaded wd_links_loaded wd_entities_loaded wd_labels_loaded wd_dates_loaded wd_coords_loaded wkt_loaded aw_loaded wf_loaded dbp_loaded lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded
 	rm -f lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded
 	rm -f wkt_loaded dbp_loaded

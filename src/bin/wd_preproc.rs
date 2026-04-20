@@ -15,6 +15,7 @@ struct EntityOutput {
     labels_lines: String,
     links_lines: String,
     dates_lines: String,
+    coords_lines: String,
 }
 
 fn csv_quote(s: &str) -> String {
@@ -45,6 +46,30 @@ fn extract_time_value(claim: &Value) -> Option<(&str, i64)> {
     Some((time, precision))
 }
 
+/// Extract a globe-coordinate value: (lat, lon, altitude, precision, globe_qid).
+/// Altitude / precision / globe may be missing — returned as empty strings.
+fn extract_globe_coordinate(claim: &Value) -> Option<(f64, f64, String, String, String)> {
+    let dv = claim.get("mainsnak")?.get("datavalue")?.get("value")?;
+    let lat = dv.get("latitude")?.as_f64()?;
+    let lon = dv.get("longitude")?.as_f64()?;
+    let altitude = dv
+        .get("altitude")
+        .and_then(|v| v.as_f64())
+        .map(|f| f.to_string())
+        .unwrap_or_default();
+    let precision = dv
+        .get("precision")
+        .and_then(|v| v.as_f64())
+        .map(|f| f.to_string())
+        .unwrap_or_default();
+    let globe = dv
+        .get("globe")
+        .and_then(|v| v.as_str())
+        .map(|s| s.rsplit('/').next().unwrap_or(s).to_string())
+        .unwrap_or_default();
+    Some((lat, lon, altitude, precision, globe))
+}
+
 fn process_entity(
     entity: &Value,
     label_langs: &[String],
@@ -56,6 +81,7 @@ fn process_entity(
     let mut labels_lines = String::new();
     let mut links_lines = String::new();
     let mut dates_lines = String::new();
+    let mut coords_lines = String::new();
 
     // --- Extract labels ---
     let sitelinks = entity.get("sitelinks").and_then(|v| v.as_object());
@@ -201,6 +227,18 @@ fn process_entity(
                         }
                     }
 
+                    if prop == "P625" {
+                        if let Some((lat, lon, alt, prec, globe)) =
+                            extract_globe_coordinate(claim)
+                        {
+                            use std::fmt::Write as _;
+                            let _ = writeln!(
+                                coords_lines,
+                                "{id},{lat},{lon},{alt},{prec},{globe}"
+                            );
+                        }
+                    }
+
                     if times_plus_nested.contains(prop.as_str()) {
                         if let Some(qualifiers) =
                             claim.get("qualifiers").and_then(|v| v.as_object())
@@ -241,6 +279,7 @@ fn process_entity(
         labels_lines,
         links_lines,
         dates_lines,
+        coords_lines,
     })
 }
 
@@ -313,6 +352,7 @@ fn main() -> Result<()> {
         let mut links = BufWriter::new(std::fs::File::create(run_dir.join("links.csv"))?);
         let mut labels = BufWriter::new(std::fs::File::create(run_dir.join("wd_labels.tsv"))?);
         let mut dates = BufWriter::new(std::fs::File::create(run_dir.join("date_claims.csv"))?);
+        let mut coords = BufWriter::new(std::fs::File::create(run_dir.join("coords.csv"))?);
 
         let mut count = 0u64;
         for output in out_rx {
@@ -326,6 +366,9 @@ fn main() -> Result<()> {
             if !output.dates_lines.is_empty() {
                 dates.write_all(output.dates_lines.as_bytes())?;
             }
+            if !output.coords_lines.is_empty() {
+                coords.write_all(output.coords_lines.as_bytes())?;
+            }
 
             count += 1;
             if count % 1_000_000 == 0 {
@@ -337,6 +380,7 @@ fn main() -> Result<()> {
         links.flush()?;
         labels.flush()?;
         dates.flush()?;
+        coords.flush()?;
 
         log::info!("Done. Written {count} entities total.");
         Ok(())

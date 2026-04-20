@@ -38,6 +38,17 @@ CREATE TABLE IF NOT EXISTS wd_labels (
     PRIMARY KEY (lang, label, qid)
 );
 
+-- Coordinate location (P625) claims per entity
+CREATE TABLE IF NOT EXISTS wd_coords (
+    qid VARCHAR(11),                -- entity QID
+    latitude DOUBLE PRECISION,
+    longitude DOUBLE PRECISION,
+    altitude DOUBLE PRECISION,      -- nullable: altitude above reference globe
+    precision DOUBLE PRECISION,     -- nullable: angular precision in degrees
+    globe VARCHAR(11) DEFAULT '',   -- globe QID (e.g. Q2 = Earth); '' if unspecified
+    PRIMARY KEY (qid, latitude, longitude, globe)
+);
+
 -- Cross-language Wikipedia link consensus
 CREATE TABLE IF NOT EXISTS wp_links (
     src VARCHAR(11),    -- source QID
@@ -151,3 +162,4 @@ CREATE INDEX IF NOT EXISTS idx_wd_links_dst ON wd_links (dst);
 CREATE INDEX IF NOT EXISTS idx_wd_dates_qid ON wd_dates (qid);
 CREATE INDEX IF NOT EXISTS idx_wd_entities_qid ON wd_entities (qid);
 CREATE INDEX IF NOT EXISTS idx_wd_labels_qid ON wd_labels (qid);
+CREATE INDEX IF NOT EXISTS idx_wd_coords_qid ON wd_coords (qid);
