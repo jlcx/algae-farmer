@@ -171,7 +171,7 @@ fn find_named_split(arg: &str) -> Option<usize> {
 
 /// Lowercase + collapse `_`/whitespace runs to single spaces. Used so that
 /// `{{See also}}`, `{{see_also}}`, and `{{see  also}}` all dispatch the same.
-fn normalize_name(name: &str) -> String {
+pub fn normalize_name(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut prev_space = true;
     for c in name.chars() {

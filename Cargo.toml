@@ -62,6 +62,10 @@ name = "wkt_preproc"
 path = "src/bin/wkt_preproc.rs"
 
 [[bin]]
+name = "preproc_diag"
+path = "src/bin/preproc_diag.rs"
+
+[[bin]]
 name = "aw_preproc"
 path = "src/bin/aw_preproc.rs"
 
