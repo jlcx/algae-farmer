@@ -143,7 +143,7 @@ run/date_claims_uniq.csv: run/date_claims.csv
 	$(TIMED) "sort/uniq date_claims.csv" -- sh -c '$(SORT) $< | uniq > $@'
 
 run/coords_uniq.csv: run/coords.csv
-	$(TIMED) "sort/uniq coords.csv" -- sh -c '$(SORT) $< | uniq > $@'
+	$(TIMED) "sort/uniq coords.csv" -- sh -c '$(SORT) -t, -k1,1 -k2,2 -k3,3 -k6,6 -u $< > $@'
 
 # ============================================================
 # Wikidata lexeme preprocessing

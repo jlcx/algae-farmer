@@ -1,3 +1,4 @@
+use algae_farmer::wikitext::{normalize_link_target, parse_templates, wkt_template_links};
 use anyhow::Result;
 use clap::Parser;
 use crossbeam_channel::bounded;
@@ -42,27 +43,17 @@ fn extract_wikilinks(re: &Regex, text: &str) -> Vec<String> {
             inner
         };
 
-        let target = target.trim();
-        if target.is_empty() {
-            continue;
+        if let Some(clean) = normalize_link_target(target) {
+            links.push(clean.to_string());
         }
+    }
 
-        // Skip namespace-prefixed links
-        if let Some(colon_pos) = target.find(':') {
-            if colon_pos > 0 {
-                let prefix = &target[..colon_pos];
-                let skip_prefixes = [
-                    "Category", "File", "Image", "Wikipedia", "WP", "Template",
-                    "Help", "Portal", "Draft", "MediaWiki", "Module", "Talk",
-                    "User", "Special",
-                ];
-                if skip_prefixes.iter().any(|p| p.eq_ignore_ascii_case(prefix)) {
-                    continue;
-                }
+    for tmpl in parse_templates(text) {
+        for target in wkt_template_links(&tmpl) {
+            if let Some(clean) = normalize_link_target(target) {
+                links.push(clean.to_string());
             }
         }
-
-        links.push(target.to_string());
     }
 
     links
