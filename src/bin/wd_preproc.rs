@@ -46,6 +46,15 @@ fn extract_time_value(claim: &Value) -> Option<(&str, i64)> {
     Some((time, precision))
 }
 
+/// Matches the wd_dates.time_value column's VARCHAR(32) limit: anything longer
+/// is from year fields with more than ~15 digits (e.g. cosmological-scale or
+/// vandalism values) and is rejected so the COPY into Postgres won't fail.
+const MAX_TIME_VALUE_LEN: usize = 32;
+
+fn time_value_ok(time: &str) -> bool {
+    time.len() <= MAX_TIME_VALUE_LEN
+}
+
 /// Extract a globe-coordinate value: (lat, lon, altitude, precision, globe_qid).
 /// Altitude / precision / globe may be missing — returned as empty strings.
 fn extract_globe_coordinate(claim: &Value) -> Option<(f64, f64, String, String, String)> {
@@ -218,12 +227,18 @@ fn process_entity(
 
                     if all_times.contains(prop.as_str()) {
                         if let Some((time_val, precision)) = extract_time_value(claim) {
-                            use std::fmt::Write as _;
-                            let _ = writeln!(
-                                dates_lines,
-                                "{id},{prop},{},{precision},,",
-                                csv_quote(time_val)
-                            );
+                            if time_value_ok(time_val) {
+                                use std::fmt::Write as _;
+                                let _ = writeln!(
+                                    dates_lines,
+                                    "{id},{prop},{},{precision},,",
+                                    csv_quote(time_val)
+                                );
+                            } else {
+                                log::warn!(
+                                    "skipped extreme time: qid={id} prop={prop} precision={precision} time={time_val}"
+                                );
+                            }
                         }
                     }
 
@@ -255,12 +270,18 @@ fn process_entity(
                                                     dv.get("time").and_then(|v| v.as_str()),
                                                     dv.get("precision").and_then(|v| v.as_i64()),
                                                 ) {
-                                                    use std::fmt::Write as _;
-                                                    let _ = writeln!(
-                                                        dates_lines,
-                                                        "{id},{qprop},{},{prec},{prop},{source_target}",
-                                                        csv_quote(time)
-                                                    );
+                                                    if time_value_ok(time) {
+                                                        use std::fmt::Write as _;
+                                                        let _ = writeln!(
+                                                            dates_lines,
+                                                            "{id},{qprop},{},{prec},{prop},{source_target}",
+                                                            csv_quote(time)
+                                                        );
+                                                    } else {
+                                                        log::warn!(
+                                                            "skipped extreme time (nested): qid={id} qprop={qprop} parent_prop={prop} parent_target={source_target} precision={prec} time={time}"
+                                                        );
+                                                    }
                                                 }
                                             }
                                         }

@@ -310,12 +310,14 @@ run/dbp/dbp_mappings_%.tsv: run/wd_labels.tsv | build
 	@mkdir -p run/dbp
 	@pv -N 'dbpedia-$*' "data/dbpedia/mappingbased-objects_lang=$*.ttl.bz2" | lbzip2 -dc | $(DBP_CONVERT) $*
 
+# Multilingual variant (as used for Wikipedia) would be:
+#   $(SORT) $$FILES | uniq -c | $(SORT) -rn > $@
 run/dbp/combined_mappings.tsv: $(ALL_DBP_MAPPINGS)
 	$(TIMED) "combine dbpedia" -- sh -c '\
 		mkdir -p run/dbp; \
 		FILES=$$(./make_lang_targets.sh dbpedia ALL_DBP_MAPPINGS); \
 		if [ -z "$$FILES" ]; then echo "Error: no dbpedia files found" >&2; exit 1; fi; \
-		$(SORT) $$FILES | uniq -c | $(SORT) -rn > $@'
+		$(SORT) -u $$FILES > $@'
 
 # ============================================================
 # Database loading
