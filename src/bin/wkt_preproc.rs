@@ -225,9 +225,13 @@ fn main() -> Result<()> {
                 }
             }
             Ok(Event::Eof) => break,
+            // See wp_preproc: truncating silently would let make cache a
+            // partial language as complete.
             Err(e) => {
-                log::warn!("[{lang}] XML parse error: {e}");
-                break;
+                anyhow::bail!(
+                    "[{lang}] XML parse error at byte {}: {e}",
+                    reader.buffer_position()
+                );
             }
             _ => {}
         }

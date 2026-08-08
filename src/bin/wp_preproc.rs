@@ -236,9 +236,15 @@ fn main() -> Result<()> {
                 }
             }
             Ok(Event::Eof) => break,
+            // Input is a concatenation of one MediaWiki XML document per
+            // export shard. Stopping here would abandon every page after the
+            // fault while still exiting successfully, so make would cache a
+            // silently truncated language. Fail instead.
             Err(e) => {
-                log::warn!("[{lang}] XML parse error: {e}");
-                break;
+                anyhow::bail!(
+                    "[{lang}] XML parse error at byte {}: {e}",
+                    reader.buffer_position()
+                );
             }
             _ => {}
         }

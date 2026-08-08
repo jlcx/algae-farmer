@@ -49,11 +49,21 @@ CREATE TABLE IF NOT EXISTS wd_coords (
     PRIMARY KEY (qid, latitude, longitude, globe)
 );
 
--- Cross-language Wikipedia link consensus
+-- Append-only language dimension: ids are assigned once and never renumbered,
+-- independent of run/languages.json regeneration. Loaders may only insert
+-- codes that don't exist yet — never delete or update existing rows.
+CREATE TABLE IF NOT EXISTS languages (
+    id   SMALLINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    code TEXT UNIQUE NOT NULL
+);
+
+-- Cross-language Wikipedia link consensus with per-language witness provenance
 CREATE TABLE IF NOT EXISTS wp_links (
-    src VARCHAR(11),    -- source QID
-    dst VARCHAR(11),    -- destination QID
-    wp_count INT,       -- number of Wikipedia languages with this link
+    src       VARCHAR(11) NOT NULL,  -- source QID
+    dst       VARCHAR(11) NOT NULL,  -- destination QID
+    witnesses INT2[]      NOT NULL   -- languages.id set, sorted ascending, no duplicates
+                          CHECK (witnesses <> '{}'),
+    wp_count  INT GENERATED ALWAYS AS (cardinality(witnesses)) STORED,
     PRIMARY KEY (src, dst)
 );
 
@@ -157,6 +167,7 @@ CREATE TABLE IF NOT EXISTS dbp_links (
 CREATE INDEX IF NOT EXISTS idx_wp_links_src ON wp_links (src);
 CREATE INDEX IF NOT EXISTS idx_wp_links_dst ON wp_links (dst);
 CREATE INDEX IF NOT EXISTS idx_wp_links_count ON wp_links (wp_count DESC);
+CREATE INDEX IF NOT EXISTS wp_links_witnesses_gin ON wp_links USING GIN (witnesses);
 CREATE INDEX IF NOT EXISTS idx_wd_links_src ON wd_links (src);
 CREATE INDEX IF NOT EXISTS idx_wd_links_dst ON wd_links (dst);
 CREATE INDEX IF NOT EXISTS idx_wd_dates_qid ON wd_dates (qid);

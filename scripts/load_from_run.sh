@@ -19,20 +19,22 @@ DBNAME="${DBNAME:-algae}"
 PSQL=(psql -d "$DBNAME" -v ON_ERROR_STOP=1)
 
 # load_table <file> <table> <copy_options> <pre_sql> <post_sql>
+#   table may include a \copy column list, e.g. "wp_links (src, dst, witnesses)"
 #   pre_sql  runs before TRUNCATE (drop indexes / PK)
 #   post_sql runs after COPY     (add PK, create indexes)
 load_table() {
     local file="$1" table="$2" copy_opts="$3" pre_sql="$4" post_sql="$5"
+    local table_name="${table%% *}"
 
     if [[ ! -f "$file" ]]; then
-        echo ">>> SKIP $table: $file not found"
+        echo ">>> SKIP $table_name: $file not found"
         return
     fi
 
-    echo ">>> LOAD $table  (<-  $file)"
+    echo ">>> LOAD $table_name  (<-  $file)"
     local start=$SECONDS
 
-    "${PSQL[@]}" -c "$pre_sql TRUNCATE $table;"
+    "${PSQL[@]}" -c "$pre_sql TRUNCATE $table_name;"
     "${PSQL[@]}" -c "\copy $table FROM '$file' $copy_opts"
     "${PSQL[@]}" -c "SET maintenance_work_mem = '4GB'; $post_sql"
 
@@ -100,15 +102,17 @@ load_table run/s2s_uniq.tsv sense_sense "DELIMITER E'\t'" \
 
 # ---- Wikipedia cross-language link graph ------------------------------------
 
-load_table run/links_converted_uniq_combined.csv wp_links "CSV" \
+load_table "run/wp_links_witnesses.csv" "wp_links (src, dst, witnesses)" "CSV" \
     "DROP INDEX IF EXISTS idx_wp_links_src;
      DROP INDEX IF EXISTS idx_wp_links_dst;
      DROP INDEX IF EXISTS idx_wp_links_count;
+     DROP INDEX IF EXISTS wp_links_witnesses_gin;
      ALTER TABLE wp_links DROP CONSTRAINT IF EXISTS wp_links_pkey;" \
     "ALTER TABLE wp_links ADD PRIMARY KEY (src, dst);
      CREATE INDEX idx_wp_links_src ON wp_links (src);
      CREATE INDEX idx_wp_links_dst ON wp_links (dst);
-     CREATE INDEX idx_wp_links_count ON wp_links (wp_count DESC);"
+     CREATE INDEX idx_wp_links_count ON wp_links (wp_count DESC);
+     CREATE INDEX wp_links_witnesses_gin ON wp_links USING GIN (witnesses);"
 
 # ---- Wiktionary / Abstract Wikipedia / Wikifunctions / DBpedia --------------
 # Loaded only if the corresponding subdirectory files were copied over.

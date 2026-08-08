@@ -54,6 +54,10 @@ name = "convert2sv"
 path = "src/bin/convert2sv.rs"
 
 [[bin]]
+name = "wp_aggregate"
+path = "src/bin/wp_aggregate.rs"
+
+[[bin]]
 name = "convert_wkt2sv"
 path = "src/bin/convert_wkt2sv.rs"
 

@@ -12,12 +12,50 @@ All source data comes from Wikimedia dump files and the DBpedia project.
 
 | Source | Format | Typical size | Dump URL pattern |
 |---|---|---|---|
-| Wikidata entities | JSON (gzipped/bz2), one entity per line, wrapped in `[...]` | ~100 GB compressed | `dumps.wikimedia.org/wikidatawiki/entities/latest-all.json.gz` |
-| Wikidata lexemes | Same JSON format as entities | Much smaller | Same dump or separate lexeme dump |
-| Wikipedia (per language) | MediaWiki XML export (bz2) | Varies; English ~22 GB compressed | `dumps.wikimedia.org/{lang}wiki/latest/{lang}wiki-latest-pages-articles-multistream.xml.bz2` |
-| Wiktionary (per language) | MediaWiki XML export (bz2) | Varies | `dumps.wikimedia.org/{lang}wiktionary/latest/{lang}wiktionary-latest-pages-articles-multistream.xml.bz2` |
-| Wikimedia Commons | Multistream index (bz2) | ~400 MB compressed | `commonswiki-latest-pages-articles-multistream-index.txt.bz2` |
+| Wikidata entities | JSON (gzipped/bz2), one entity per line, wrapped in `[...]` | ~100 GB compressed | `dumps.wikimedia.org/other/wikibase/wikidatawiki/latest-all.json.gz` |
+| Wikidata lexemes | Same JSON format as entities | Much smaller | `dumps.wikimedia.org/other/wikibase/wikidatawiki/latest-lexemes.json.bz2` |
+| Wikipedia (per language) | MediaWiki XML export (bz2), sharded | Varies; English ~45 GB compressed | `dumps.wikimedia.org/other/mediawiki_content_current/{lang}wiki/{date}/xml/bzip2/` |
+| Wiktionary (per language) | MediaWiki XML export (bz2), sharded | Varies | `dumps.wikimedia.org/other/mediawiki_content_current/{lang}wiktionary/{date}/xml/bzip2/` |
+| Wikimedia Commons | Namespace-6 title list (gz) | ~1.4 GB compressed | `dumps.wikimedia.org/other/mediatitles/{date}/commonswiki-{date}-all-titles-in-ns-6.gz` |
 | DBpedia | Turtle (.ttl) files per language | Varies | `downloads.dbpedia.org/repo/dbpedia/mappings/mappingbased-objects/{version}/mappingbased-objects_lang={lang}.ttl.bz2` |
+
+### MediaWiki Content File Exports
+
+Wiki content comes from the [MediaWiki Content File
+Exports](https://wikitech.wikimedia.org/wiki/MediaWiki_Content_File_Exports),
+which replaced the `{wiki}-latest-pages-articles-multistream.xml.bz2` dumps —
+the infrastructure behind those could no longer reliably produce the larger
+wikis, and it is no longer maintained.
+
+What changed for this pipeline:
+
+- **One wiki is a set of files, not one file.** Each export is split by page-id
+  range: `{wiki}-{date}-p{first}p{last}.xml.bz2`, plus
+  `p{first}r{first_rev}r{last_rev}` variants where a single page is too large.
+  English Wikipedia is ~20 shards. Each shard is a self-contained MediaWiki
+  XML document (schema 0.11, same shape `Special:Export` produces), so the
+  shards of a wiki can simply be concatenated into one stream: the preprocessors
+  read a sequence of `<mediawiki>` documents and only care about `<page>`
+  elements.
+- **Snapshots are dated, not "latest".** Exports are published monthly on the
+  1st under `{wiki}/{YYYY-MM-DD}/xml/bzip2/`, and take days to complete for the
+  big wikis. `SHA256SUMS` is written only once an export has finished, so it
+  serves as both the completion marker and the integrity check. There is no
+  `latest/` alias; the downloader picks the newest date that has a `SHA256SUMS`.
+- **Every namespace is included.** The old `pages-articles` dumps omitted talk
+  and user pages; these exports contain all of them, so the files are roughly
+  twice the size for the same content. The preprocessors already filter on
+  `<ns>`, so only download size and decompression time are affected.
+- **No multistream index.** The Commons file list is now taken from
+  `other/mediatitles`, which publishes the namespace-6 titles of each wiki daily
+  — see §2.1.
+- **Closed wikis are gone.** Wikis such as `aawiki` have no content export;
+  language discovery (§1.1.1) reflects that automatically.
+
+Shards are stored under `data/content/{wiki}/{date}/`. Once every shard is
+downloaded and verified, `scripts/download.sh` writes the list of shard paths to
+`data/content/{wiki}.manifest`; that manifest is what the Makefile depends on,
+and superseded date directories are removed.
 
 ### 1.1 Language discovery and registry
 
@@ -27,7 +65,7 @@ Rather than maintaining hardcoded language lists in individual scripts, the pipe
 
 Runs as the first step of the pipeline, before any processing begins. Queries Wikimedia and DBpedia dump indexes to enumerate every language edition with a current dump available:
 
-- **Wikipedia:** Enumerates `dumps.wikimedia.org/backup-index.html` (or directory listings) for all `{lang}wiki` editions that have a completed `pages-articles-multistream` dump.
+- **Wikipedia:** Enumerates `dumps.wikimedia.org/other/mediawiki_content_current/` for all `{lang}wiki` editions that have a content export. This is the same index the downloader fetches from, so discovery cannot name a wiki that cannot be downloaded.
 - **Wiktionary:** Same approach, scanning for `{lang}wiktionary` editions.
 - **DBpedia:** Enumerates `downloads.dbpedia.org/repo/dbpedia/mappings/mappingbased-objects/` for all available `lang=` directories.
 
@@ -70,11 +108,13 @@ The pipeline is orchestrated via a `Makefile`. All intermediate and output files
 
 ### 2.1 Commons preprocessing (`commons_preproc`)
 
-**Input:** Commons multistream index, streamed from bz2 via stdin.
+**Input:** Commons namespace-6 title list (`commonswiki-{date}-all-titles-in-ns-6.gz` from `other/mediatitles`), streamed from gz via stdin.
 
-**Processing:** Each line of the index has the format `offset:page_id:title`. The script extracts the title (third colon-separated field).
+**Processing:** One title per line in database form -- underscores for spaces, no `File:` prefix -- behind a single `page_title` header line. The header is skipped and underscores are converted back to spaces, the form link targets take in wikitext.
 
 **Output:** `commons_files.txt` -- one filename per line. Used later by `wp_convert` to identify links that point to Commons files rather than Wikipedia articles.
+
+This list replaces the multistream index that used to supply it. The index covered every Commons namespace, so `[[commons:Category:...]]`-style links were also recognised; the title list is namespace 6 only, which is what "is this a Commons file?" actually asks. Bare `[[commons:Foo.jpg]]` links (no `File:` prefix) are now matched too, which the index only caught if Commons happened to have a mainspace page of that name.
 
 ### 2.2 Wikidata entity preprocessing (`wd_preproc`)
 
@@ -211,24 +251,45 @@ sort {lang}_best_guesses.txt | uniq > {lang}_best_guesses_uniq.txt
 cut -f2 {lang}_conv_failed_uniq.txt | sort | uniq > {lang}_dsts_failed_uniq.txt
 ```
 
-Cross-language combination (counting how many languages share each link):
+Cross-language combination for the main link graph is done by `wp_aggregate`
+(see below); the diagnostic streams still use `uniq -c`:
 ```
-sort *_links_converted_uniq.txt | uniq -c | sort -rn > links_converted_uniq_combined.txt
 sort *_conv_failed_uniq.txt | uniq -c | sort -rn > conv_failed_uniq_combined.txt
 sort *_commons_uniq.txt | uniq -c | sort -rn > commons_uniq_combined.txt
 sort *_best_guesses_uniq.txt | uniq -c | sort -rn > best_guesses_uniq_combined.txt
 sort *_dsts_failed_uniq.txt | uniq -c | sort -rn > dsts_failed_uniq_combined.txt
 ```
 
-The `uniq -c` count becomes the **wp_count** -- the number of Wikipedia language editions that independently link two concepts. This is the core metric of ALGAE.
+### 2.7 Cross-language aggregation with witness provenance (`wp_aggregate`)
 
-### 2.7 Format conversion (`convert2sv`)
+Replaces the former `sort *_links_converted_uniq.txt | uniq -c | convert2sv`
+path. A heap-based k-way merge over the per-language sorted
+`{lang}_links_converted_uniq.txt` files that remembers *which* languages
+witnessed each link, not just how many:
 
-Converts the `uniq -c` output into CSV suitable for PostgreSQL `\copy`. For 3-column input (format: `count\tsrc\tdst` from `uniq -c`), outputs `src,dst,count` — note the column reorder to match the `(src, dst, wp_count)` table schema. For 2-column input (no count), outputs `src,dst` unchanged. The column mapping is validated against the target table schema at the top of the script.
+- At startup, resolves each language code to its id in the append-only
+  `languages` DB table (inserting codes that don't exist yet; never updating
+  or deleting existing rows), and opens each per-language file as a stream
+  tagged with that id.
+- Standard k-way merge on `(src, dst)`; for each distinct pair, collects the
+  set of tags that produced it. Memory is O(k) — the pair universe is never
+  buffered. Bitmaps/bitsets are permitted only as transient in-memory
+  structures here, never serialized to disk or the database (bit positions
+  would silently rot when `run/languages.json` is regenerated).
+- Emits one CSV row per pair for `\copy`: `src,dst,"{5,12,88}"` (Postgres
+  `int2[]` literal, ids sorted ascending).
 
-**Input:** A `.txt` file passed as command-line argument.
+The **wp_count** — the number of Wikipedia language editions that
+independently link two concepts, the core metric of ALGAE — is now derived
+in the database as `cardinality(witnesses)` (a stored generated column).
 
-**Output:** Same filename with `.csv` extension.
+**Input:** `--run-dir` (default `run`) containing `languages.json` and the
+per-language files; `--db-url` for the `languages` table.
+
+**Output:** `run/wp_links_witnesses.csv`.
+
+(`convert2sv` still exists for ad-hoc `uniq -c` output conversion but is no
+longer part of the wp_links path.)
 
 ### 2.8 Wiktionary link extraction and aggregation (`wiktionary/`)
 
@@ -350,20 +411,37 @@ CREATE TABLE wd_entities (
 -- Loaded from: items.csv (CSV) via \copy
 ```
 
-### 4.2 Wikipedia link table
+### 4.2 Wikipedia link tables
 
 ```sql
--- Cross-language Wikipedia link consensus
+-- Append-only language dimension: ids are assigned once and never
+-- renumbered, independent of run/languages.json regeneration. Loaders may
+-- only insert codes that don't exist yet.
+CREATE TABLE languages (
+    id   SMALLINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    code TEXT UNIQUE NOT NULL
+);
+-- Populated by: wp_aggregate at startup
+
+-- Cross-language Wikipedia link consensus with witness provenance
 CREATE TABLE wp_links (
-    src VARCHAR(11),    -- source QID
-    dst VARCHAR(11),    -- destination QID
-    wp_count INT,       -- number of Wikipedia languages with this link
+    src       VARCHAR(11) NOT NULL,  -- source QID
+    dst       VARCHAR(11) NOT NULL,  -- destination QID
+    witnesses INT2[]      NOT NULL   -- languages.id set, sorted ascending
+                          CHECK (witnesses <> '{}'),
+    wp_count  INT GENERATED ALWAYS AS (cardinality(witnesses)) STORED,
     PRIMARY KEY (src, dst)
 );
--- Loaded from: links_converted_uniq_combined.csv (CSV)
+CREATE INDEX wp_links_witnesses_gin ON wp_links USING GIN (witnesses);
+-- Loaded from: wp_links_witnesses.csv (CSV, columns src, dst, witnesses)
 ```
 
-This is the core ALGAE table. A row `(Q42, Q1, 150)` means that 150 Wikipedia language editions have a link from the article about Q42 (Douglas Adams) to the article about Q1 (Universe).
+This is the core ALGAE table. A row `(Q42, Q1, {5,12,88}, 3)` means the
+Wikipedia language editions with ids 5, 12, and 88 in `languages` each have a
+link from the article about Q42 (Douglas Adams) to the article about Q1
+(Universe). `wp_count` is a stored generated column, so every query written
+against the old scalar schema works unchanged. The GIN index serves
+`witnesses && ...` (any-of) and `witnesses @> ...` (contains) filters.
 
 ### 4.3 Lexeme tables
 
@@ -463,6 +541,22 @@ The bidirectional check ensures that a Wikidata statement linking B→A is not f
 
 Joins a set of common link items against a P31 (instance of) table to determine the types of frequently-linked entities.
 
+### 5.3 Witness overlap query (`queries/witnesses_overlap.sql`)
+
+Edges witnessed by *any* of a given language set (`witnesses && ARRAY[...]::int2[]`), for clone-family filtering. Language codes are resolved to ids via the `languages` table; the filter is served by `wp_links_witnesses_gin`.
+
+```
+psql -d algae -v langs="{eo,fi,hy}" -f queries/witnesses_overlap.sql
+```
+
+### 5.4 Language recall query (`queries/language_recall.sql`)
+
+For a given language id, counts edges with `wp_count >= N` that it does / does not witness (`witnesses @> ARRAY[id]::int2[]`).
+
+```
+psql -d algae -v lang_id=5 -v min_count=10 -f queries/language_recall.sql
+```
+
 ---
 
 ## 6. Microscope (`microscope`)
@@ -516,8 +610,8 @@ run/languages.json:
 	discover_languages > $@
 
 # Commons preprocessing
-run/commons_files.txt: data/commonswiki-latest-*.bz2
-	bzcat $< | commons_preproc > $@
+run/commons_files.txt: data/commonswiki-all-titles-in-ns-6.gz
+	zcat $< | commons_preproc > $@
 
 # Wikidata entity preprocessing
 run/items.csv run/links.csv run/wd_labels.tsv run/date_claims.csv: data/latest-all.json.gz
@@ -527,32 +621,28 @@ run/links_uniq.csv: run/links.csv
 	sort $< | uniq > $@
 
 # Per-language Wikipedia extraction (one target per language)
-# Generated dynamically from run/languages.json
-run/%_wikilinks.txt run/%_redirects.txt: data/%wiki-latest-*.xml.bz2
-	bzcat $< | wp_preproc $*
+# Generated dynamically from run/languages.json. The manifest lists the export
+# shards for that wiki; concatenating them yields one stream of XML documents.
+run/%_wikilinks.txt run/%_redirects.txt: data/content/%wiki.manifest
+	bzcat $$(cat $<) | wp_preproc $*
 
 # Wikipedia link conversion -- single invocation processes all languages
 # (loads wd_labels.tsv once, then loops over each language's wikilinks/redirects)
 $(ALL_LANG_CONVERTED): $(ALL_LANG_WIKILINKS) run/wd_labels.tsv run/commons_files.txt
 	wp_convert
 
-# Per-language sort/dedup and CSV conversion
+# Per-language sort/dedup
 run/%_links_converted_uniq.txt: run/%_links_converted.txt
 	sort $< | uniq > $@
 
-run/%_links_converted.csv: run/%_links_converted_uniq.txt
-	convert2sv $<
-
-# Cross-language combination
-run/links_converted_uniq_combined.txt: $(ALL_LANG_CONVERTED_UNIQ)
-	sort $^ | uniq -c | sort -rn > $@
-
-run/links_converted_uniq_combined.csv: run/links_converted_uniq_combined.txt
-	convert2sv $<
+# Cross-language aggregation with witness provenance (k-way merge,
+# language ids resolved against the append-only `languages` table)
+run/wp_links_witnesses.csv: $(ALL_LANG_CONVERTED_UNIQ)
+	wp_aggregate --output $@
 
 # Wiktionary targets (per-language extraction, combination, conversion)
-run/wkt/%_wikilinks.txt: data/%wiktionary-latest-*.xml.bz2
-	bzcat $< | wkt_preproc $*
+run/wkt/%_wikilinks.txt: data/content/%wiktionary.manifest
+	bzcat $$(cat $<) | wkt_preproc $*
 
 run/wkt/links_uniq_combined.tsv run/wkt/entries.tsv: $(ALL_WKT_LINKS)
 	sort $^ | uniq -c | sort -rn | convert_wkt2sv
@@ -565,8 +655,8 @@ run/dbp/combined_mappings.tsv: $(ALL_DBP_MAPPINGS)
 	sort $^ | uniq -c | sort -rn > $@
 
 # Database loading targets
-wp_links_loaded: run/links_converted_uniq_combined.csv
-	psql -c "\copy wp_links FROM '$<' CSV" && touch $@
+wp_links_loaded: run/wp_links_witnesses.csv
+	psql -c "\copy wp_links (src, dst, witnesses) FROM '$<' CSV" && touch $@
 
 wd_links_loaded: run/links_uniq.csv
 	psql -c "\copy wd_links FROM '$<' CSV" && touch $@
@@ -630,7 +720,7 @@ The Wiktionary and DBpedia pipelines are integrated into the same `Makefile` as 
               |            v             |                           |
               |       [wd_links]         |                           |
               |                          |                           |
-   Wikipedia XML dumps (per lang)           |         DBpedia .ttl (per lang)
+   Wikipedia content exports (per lang)     |         DBpedia .ttl (per lang)
           |                              |                   |
      wp_preproc (per lang)            |            dbp_convert
           |                              |                   |
@@ -646,20 +736,16 @@ The Wiktionary and DBpedia pipelines are integrated into the same `Makefile` as 
          |
     sort | uniq (per lang)
          |
-    uniq -c (cross-lang)
-         |
-  links_converted_uniq_combined.txt
-         |
-    convert2sv
-         |
-  links_converted_uniq_combined.csv
+    wp_aggregate (k-way merge, cross-lang,
+         |        tags from [languages])
+  wp_links_witnesses.csv
          |
       \copy
          |
       [wp_links]
 
 
-   Commons index                Wiktionary XML dumps (x170)
+   Commons ns-6 titles        Wiktionary content exports (x172)
         |                              |
    commons_preproc            wkt_preproc (per lang)
         |                              |
@@ -700,9 +786,9 @@ The Wiktionary and DBpedia pipelines are integrated into the same `Makefile` as 
 
 2. **Title-based linking.** The Wikipedia-to-Wikidata bridge relies on exact title matching via `wd_labels.tsv`. This means conversion quality depends on the completeness of Wikidata sitelinks and on title normalization handling (capitalization, redirects, whitespace, `&nbsp;`, underscores).
 
-3. **wp_count as a signal.** The number of Wikipedia languages independently linking two concepts is treated as a measure of relationship strength. This is used both for discovery (WP-not-WD query) and for anomaly detection (flagging removal of high-wp_count statements).
+3. **wp_count as a signal, witnesses as provenance.** The number of Wikipedia languages independently linking two concepts is treated as a measure of relationship strength. This is used both for discovery (WP-not-WD query) and for anomaly detection (flagging removal of high-wp_count statements). The `witnesses` array preserves *which* languages produced each link; `wp_count` is derived from it as a stored generated column. Witness ids are anchored to the append-only `languages` table rather than bit positions or ordinals, so regenerating `run/languages.json` (which has no ordering guarantee) can never silently corrupt stored provenance.
 
-4. **Sort/uniq deduplication.** Rather than deduplicating in memory, the pipeline relies on Unix `sort | uniq` for deduplication and `uniq -c` for counting. This keeps memory usage low but requires disk space for intermediate sorted files.
+4. **Sort/uniq deduplication.** Rather than deduplicating in memory, the pipeline relies on Unix `sort | uniq` for per-language deduplication and `uniq -c` for counting on the diagnostic streams. The main link graph is combined by `wp_aggregate`, a k-way merge over the per-language sorted files with O(languages) memory — the same merge `sort -m | uniq -c` would do, but remembering which streams produced each pair. Disk is still required for intermediate sorted files.
 
 5. **All languages.** The pipeline automatically discovers and processes every available Wikipedia, Wiktionary, and DBpedia language edition via the language discovery step (section 1.1). This maximizes the wp_count signal -- small Wikipedias still contribute independent evidence of a relationship. An override mechanism allows restricting to a subset for testing or when a dump is known-broken.
 
@@ -719,7 +805,7 @@ The Wiktionary and DBpedia pipelines are integrated into the same `Makefile` as 
 | Dependency | Used by | Purpose |
 |---|---|---|
 | XML streaming parser library | `wp_preproc`, `wkt_preproc` | Streaming XML parsing |
-| PostgreSQL client library | `microscope` | PostgreSQL access |
+| PostgreSQL client library | `microscope`, `wp_aggregate` | PostgreSQL access |
 | HTTP client library | `get_featured`, `discover_languages` | HTTP requests |
 | PostgreSQL | Database | Storage and querying |
 | `sort`, `uniq`, `cut` (coreutils) | Makefile recipes | Deduplication and counting |

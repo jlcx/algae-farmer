@@ -1,6 +1,6 @@
 //! Diagnostic for the template-aware link extractor.
 //!
-//! Reads a pages-articles XML stream (same shape as wp_preproc / wkt_preproc),
+//! Reads a MediaWiki XML export stream (same shape as wp_preproc / wkt_preproc),
 //! and for each article page reports the *delta* between the old `[[...]]`-only
 //! extraction and the new template-aware extraction — i.e. link targets that
 //! the template pass adds beyond what the wikilink regex already finds.

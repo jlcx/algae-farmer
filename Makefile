@@ -1,11 +1,26 @@
 SHELL := /bin/bash
+# Recipes are decompression pipelines (pv | lbzip2 -dc | preproc). Without
+# pipefail the exit status is the preprocessor's, so a shard that fails to
+# decompress mid-stream looks like success and make records a truncated output
+# as complete. With DELETE_ON_ERROR the partial file is removed instead of
+# being cached as up to date on the next run.
+.SHELLFLAGS := -o pipefail -c
+.DELETE_ON_ERROR:
 .SUFFIXES:
 
 # Allow overriding parallelism: make JOBS=8 all
 JOBS ?= $(shell nproc)
 
-# Parallel sort with large buffer for better performance
-SORT := LC_ALL=C sort --parallel=$(JOBS) --buffer-size=4G
+# Parallel sort. Recipes run concurrently under -j and each sort holds its
+# buffer resident, so the per-sort budget is what bounds peak memory, not the
+# single-sort figure. A 4G buffer times a dozen concurrent sorts alongside
+# wp_convert (~50GB for the label and Commons tables) exceeds RAM on a machine
+# with no swap, which takes the whole box down rather than failing one recipe.
+# Keep the buffer modest and let sort spill to disk; these inputs exceed any
+# plausible buffer anyway, so the merge is happening regardless.
+SORT_BUFFER   ?= 1G
+SORT_PARALLEL ?= 4
+SORT := LC_ALL=C sort --parallel=$(SORT_PARALLEL) --buffer-size=$(SORT_BUFFER)
 
 # STEP: announce a step (no timing — for steps with pv or other progress)
 # TIMED: announce, run command, print elapsed time
@@ -20,7 +35,7 @@ WD_PREPROC := $(BIN_DIR)/wd_preproc
 LEX_PREPROC:= $(BIN_DIR)/lex_preproc
 WP_PREPROC := $(BIN_DIR)/wp_preproc
 WP_CONVERT := $(BIN_DIR)/wp_convert
-CONVERT2SV := $(BIN_DIR)/convert2sv
+WP_AGG     := $(BIN_DIR)/wp_aggregate
 WKT_PREPROC:= $(BIN_DIR)/wkt_preproc
 CONVERT_WKT:= $(BIN_DIR)/convert_wkt2sv
 AW_PREPROC := $(BIN_DIR)/aw_preproc
@@ -77,8 +92,9 @@ download-wikifunctions:
 download-dbpedia: run/languages.json
 	./scripts/download.sh dbpedia
 
-# Re-check all downloads (wget -N only fetches if remote is newer).
-# Updated files get new mtimes, so downstream targets rebuild automatically.
+# Re-check all downloads. Content exports are fetched when a newer completed
+# export date is published; the manifest is rewritten only then, so downstream
+# targets rebuild exactly when the underlying data actually changed.
 # Usage: make check-downloads && make -j16 all
 check-downloads: run/languages.json
 	./scripts/download.sh all
@@ -94,20 +110,29 @@ data/latest-all.json.gz:
 data/latest-lexemes.json.bz2:
 	@flock $(DOWNLOAD_LOCK) ./scripts/download.sh wikidata
 
-data/commonswiki-latest-pages-articles-multistream-index.txt.bz2:
+data/commonswiki-all-titles-in-ns-6.gz:
 	@flock $(DOWNLOAD_LOCK) ./scripts/download.sh commons
 
-data/abstractwiki-latest-pages-articles-multistream.xml.bz2:
+# Wiki content comes from the MediaWiki Content File Exports, which ship one
+# wiki as a set of page-id-ranged XML shards. download.sh writes the shard
+# paths to data/content/<wiki>.manifest once every shard has been fetched and
+# checksummed, so the manifest is the dependency Make tracks.
+data/content/abstractwiki.manifest:
 	@flock $(DOWNLOAD_LOCK) ./scripts/download.sh abstractwiki
 
-data/wikifunctionswiki-latest-pages-articles-multistream.xml.bz2:
+data/content/wikifunctionswiki.manifest:
 	@flock $(DOWNLOAD_LOCK) ./scripts/download.sh wikifunctions
 
-data/%wiki-latest-pages-articles-multistream.xml.bz2:
+data/content/%wiki.manifest:
 	@flock $(DOWNLOAD_LOCK) ./scripts/download.sh wikipedia-single $*
 
-data/%wiktionary-latest-pages-articles-multistream.xml.bz2:
+data/content/%wiktionary.manifest:
 	@flock $(DOWNLOAD_LOCK) ./scripts/download.sh wiktionary-single $*
+
+# Targets built by a pattern rule are intermediate by default, which means Make
+# deletes them once the things depending on them are up to date. A manifest is
+# the receipt for a multi-gigabyte download, so keep it.
+.PRECIOUS: data/content/%wiki.manifest data/content/%wiktionary.manifest
 
 # ============================================================
 # Language discovery
@@ -122,9 +147,9 @@ run/languages.json: | build
 # Commons preprocessing
 # ============================================================
 
-run/commons_files.txt: data/commonswiki-latest-pages-articles-multistream-index.txt.bz2 | build
+run/commons_files.txt: data/commonswiki-all-titles-in-ns-6.gz | build
 	$(STEP) "commons_preproc"
-	@pv -N commons $< | lbzip2 -dc | $(COMMONS) > $@
+	@pv -N commons $< | gzip -dc | $(COMMONS) > $@
 
 # ============================================================
 # Wikidata entity preprocessing
@@ -176,9 +201,9 @@ run/s2s_uniq.tsv: run/s2s.tsv
 # Serialized via lock: wp/wkt_preproc are internally parallel, so only one at a time
 XML_PREPROC_LOCK := .xml_preproc.lock
 # Also wait for wd_preproc to finish so two CPU-saturating jobs don't overlap
-run/%_wikilinks.txt run/%_redirects.txt &: data/%wiki-latest-pages-articles-multistream.xml.bz2 run/items.csv | build
+run/%_wikilinks.txt run/%_redirects.txt &: data/content/%wiki.manifest run/items.csv | build
 	$(STEP) "wp_preproc $*"
-	@flock $(XML_PREPROC_LOCK) sh -c "pv -N '$*wiki' $< | lbzip2 -dc | $(WP_PREPROC) $*"
+	@flock $(XML_PREPROC_LOCK) bash -o pipefail -c 'pv -N "$*wiki" $$(cat $<) | lbzip2 -dc | $(WP_PREPROC) $*'
 
 # ============================================================
 # Wikipedia link conversion (single invocation for all languages)
@@ -207,11 +232,11 @@ run/%_dsts_failed_uniq.txt: run/%_conv_failed_uniq.txt
 # Cross-language combination
 # ============================================================
 
-run/links_converted_uniq_combined.txt: $(ALL_LANG_CONVERTED_UNIQ)
-	$(TIMED) "combine links_converted" -- sh -c '\
-		FILES=$$(./make_lang_targets.sh wikipedia ALL_LANG_CONVERTED_UNIQ); \
-		if [ -z "$$FILES" ]; then echo "Error: no language files found" >&2; exit 1; fi; \
-		$(SORT) $$FILES | uniq -c | $(SORT) -rn > $@'
+# K-way merge with witness provenance: tags each per-language stream with its
+# id from the append-only `languages` table (inserting new codes first) and
+# emits src,dst,"{id,...}" rows for \copy. Replaces sort | uniq -c | convert2sv.
+run/wp_links_witnesses.csv: $(ALL_LANG_CONVERTED_UNIQ) | build
+	$(TIMED) "wp_aggregate (all languages)" -- $(WP_AGG) --db-url "host=localhost dbname=$(DBNAME)" --output $@
 
 run/conv_failed_uniq_combined.txt: $(patsubst %_links_converted_uniq.txt,%_conv_failed_uniq.txt,$(ALL_LANG_CONVERTED_UNIQ))
 	$(TIMED) "combine conv_failed" -- sh -c '\
@@ -241,9 +266,6 @@ run/dsts_failed_uniq_combined.txt: $(patsubst %_links_converted_uniq.txt,%_dsts_
 # Format conversion to CSV
 # ============================================================
 
-run/links_converted_uniq_combined.csv: run/links_converted_uniq_combined.txt | build
-	$(TIMED) "convert2sv" -- $(CONVERT2SV) $<
-
 run/items_loaded.csv: run/items.csv
 	cp $< $@
 
@@ -252,10 +274,10 @@ run/items_loaded.csv: run/items.csv
 # ============================================================
 
 # Serialized via shared lock: wkt_preproc is internally parallel
-run/wkt/%_wikilinks.txt run/wkt/%_redirects.txt &: data/%wiktionary-latest-pages-articles-multistream.xml.bz2 | build
+run/wkt/%_wikilinks.txt run/wkt/%_redirects.txt &: data/content/%wiktionary.manifest | build
 	$(STEP) "wkt_preproc $*"
 	@mkdir -p run/wkt
-	@flock $(XML_PREPROC_LOCK) sh -c "pv -N '$*wiktionary' $< | lbzip2 -dc | $(WKT_PREPROC) $*"
+	@flock $(XML_PREPROC_LOCK) bash -o pipefail -c 'pv -N "$*wiktionary" $$(cat $<) | lbzip2 -dc | $(WKT_PREPROC) $*'
 
 run/wkt/%_links_uniq.txt: run/wkt/%_wikilinks.txt
 	$(TIMED) "sort/uniq wkt/$*" -- sh -c '$(SORT) $< | uniq > $@'
@@ -274,10 +296,10 @@ run/wkt/entries_uniq.tsv: run/wkt/entries.tsv
 # Abstract Wikipedia pipeline
 # ============================================================
 
-run/aw/entries.tsv run/aw/refs.tsv &: data/abstractwiki-latest-pages-articles-multistream.xml.bz2 | build
+run/aw/entries.tsv run/aw/refs.tsv &: data/content/abstractwiki.manifest | build
 	$(STEP) "aw_preproc"
 	@mkdir -p run/aw
-	@pv -N abstractwiki $< | lbzip2 -dc | $(AW_PREPROC)
+	@pv -N abstractwiki $$(cat $<) | lbzip2 -dc | $(AW_PREPROC)
 
 run/aw/entries_uniq.tsv: run/aw/entries.tsv
 	$(TIMED) "sort/uniq aw/entries" -- sh -c '$(SORT) -u $< > $@'
@@ -289,10 +311,10 @@ run/aw/refs_uniq.tsv: run/aw/refs.tsv
 # Wikifunctions pipeline
 # ============================================================
 
-run/wf/objects.tsv run/wf/labels.tsv &: data/wikifunctionswiki-latest-pages-articles-multistream.xml.bz2 | build
+run/wf/objects.tsv run/wf/labels.tsv &: data/content/wikifunctionswiki.manifest | build
 	$(STEP) "wf_preproc"
 	@mkdir -p run/wf
-	@pv -N wikifunctions $< | lbzip2 -dc | $(WF_PREPROC)
+	@pv -N wikifunctions $$(cat $<) | lbzip2 -dc | $(WF_PREPROC)
 
 run/wf/objects_uniq.tsv: run/wf/objects.tsv
 	$(TIMED) "sort/uniq wf/objects" -- sh -c '$(SORT) -u $< > $@'
@@ -327,22 +349,24 @@ run/dbp/combined_mappings.tsv: $(ALL_DBP_MAPPINGS)
 
 PSQL := psql -d $(DBNAME)
 
-wp_links_loaded: run/links_converted_uniq_combined.csv
+wp_links_loaded: run/wp_links_witnesses.csv
 	$(TIMED) "load wp_links" -- sh -c '\
 		$(PSQL) -c " \
 			DROP INDEX IF EXISTS idx_wp_links_src; \
 			DROP INDEX IF EXISTS idx_wp_links_dst; \
 			DROP INDEX IF EXISTS idx_wp_links_count; \
+			DROP INDEX IF EXISTS wp_links_witnesses_gin; \
 			ALTER TABLE wp_links DROP CONSTRAINT IF EXISTS wp_links_pkey; \
 			TRUNCATE wp_links; \
 			" && \
-		$(PSQL) -c "\copy wp_links FROM '"'"'$<'"'"' CSV" && \
+		$(PSQL) -c "\copy wp_links (src, dst, witnesses) FROM '"'"'$<'"'"' CSV" && \
 		$(PSQL) -c " \
 			SET maintenance_work_mem = '"'"'4GB'"'"'; \
 			ALTER TABLE wp_links ADD PRIMARY KEY (src, dst); \
 			CREATE INDEX idx_wp_links_src ON wp_links (src); \
 			CREATE INDEX idx_wp_links_dst ON wp_links (dst); \
 			CREATE INDEX idx_wp_links_count ON wp_links (wp_count DESC); \
+			CREATE INDEX wp_links_witnesses_gin ON wp_links USING GIN (witnesses); \
 			" && touch $@'
 
 wd_links_loaded: run/links_uniq.csv

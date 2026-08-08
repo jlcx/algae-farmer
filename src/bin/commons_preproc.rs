@@ -1,24 +1,34 @@
 use std::io::{self, BufRead, Write};
 
-/// Reads Commons multistream index from stdin (format: offset:page_id:title).
-/// Outputs one filename per line to stdout.
+/// Reads the Commons namespace-6 title list from stdin, one title per line.
+///
+/// Source: `other/mediatitles/<date>/commonswiki-<date>-all-titles-in-ns-6.gz`.
+/// This replaces the multistream index that came with the retired XML dumps;
+/// titles arrive in database form (underscores, no `File:` prefix) behind a
+/// single `page_title` header line.
+///
+/// Outputs one filename per line to stdout, in display form (spaces), which is
+/// how link targets appear in wikitext.
 fn main() {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut out = io::BufWriter::new(stdout.lock());
 
+    let mut first = true;
     for line in stdin.lock().lines() {
         let line = match line {
             Ok(l) => l,
             Err(_) => continue,
         };
-        // Format: offset:page_id:title
-        // Title is the third field (everything after the second colon)
-        let mut parts = line.splitn(3, ':');
-        let _offset = parts.next();
-        let _page_id = parts.next();
-        if let Some(title) = parts.next() {
-            let _ = writeln!(out, "{title}");
+        if first {
+            first = false;
+            if line == "page_title" {
+                continue;
+            }
         }
+        if line.is_empty() {
+            continue;
+        }
+        let _ = writeln!(out, "{}", line.replace('_', " "));
     }
 }

@@ -88,9 +88,10 @@ fn main() -> Result<()> {
                 _ => {}
             },
             Ok(Event::Eof) => break,
+            // See wp_preproc: truncating silently would let make cache a
+            // partial output as complete.
             Err(e) => {
-                log::warn!("XML parse error: {e}");
-                break;
+                anyhow::bail!("XML parse error at byte {}: {e}", reader.buffer_position());
             }
             _ => {}
         }

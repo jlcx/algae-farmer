@@ -27,11 +27,21 @@ Or download selectively:
 
 ```
 make download-wikidata     # Wikidata entity + lexeme dumps
-make download-commons      # Commons multistream index
-make download-wikipedia    # Per-language Wikipedia XML dumps
-make download-wiktionary   # Per-language Wiktionary XML dumps
+make download-commons      # Commons file-title list
+make download-wikipedia    # Per-language Wikipedia content exports
+make download-wiktionary   # Per-language Wiktionary content exports
 make download-dbpedia      # DBpedia mapping files
 ```
+
+Wiki content comes from the [MediaWiki Content File
+Exports](https://wikitech.wikimedia.org/wiki/MediaWiki_Content_File_Exports),
+which replaced the old `pages-articles-multistream` XML dumps. Each wiki is
+exported monthly as a set of bz2-compressed XML shards; the downloader picks the
+newest completed export (the one with a `SHA256SUMS`), verifies every shard, and
+records the shard list in `data/content/<wiki>.manifest`. Older exports of the
+same wiki are deleted once a newer one is in place — set `PRUNE_OLD_EXPORTS=0`
+to keep them. Note that these exports include all namespaces, so they are
+roughly twice the size of the dumps they replace (English Wikipedia is ~45 GB).
 
 Missing data files are also downloaded on demand when `make` needs them. If you already have dump files elsewhere, you can symlink them:
 
