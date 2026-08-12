@@ -225,6 +225,15 @@ run/%_commons_uniq.txt: run/%_commons.txt
 run/%_best_guesses_uniq.txt: run/%_best_guesses.txt
 	$(TIMED) "sort/uniq $*_best_guesses" -- sh -c '$(SORT) $< | uniq > $@'
 
+# Hits on Wikidata's language-neutral `mul` label, split by whether the name is
+# claimed by one entity or several. Diagnostic streams like best_guesses: they
+# do not feed wp_links.
+run/%_mul_guesses_uniq.txt: run/%_mul_guesses.txt
+	$(TIMED) "sort/uniq $*_mul_guesses" -- sh -c '$(SORT) $< | uniq > $@'
+
+run/%_mul_ambiguous_uniq.txt: run/%_mul_ambiguous.txt
+	$(TIMED) "sort/uniq $*_mul_ambiguous" -- sh -c '$(SORT) $< | uniq > $@'
+
 run/%_dsts_failed_uniq.txt: run/%_conv_failed_uniq.txt
 	$(TIMED) "sort/uniq $*_dsts_failed" -- sh -c 'cut -f2 $< | $(SORT) | uniq > $@'
 
@@ -253,6 +262,18 @@ run/commons_uniq_combined.txt: $(patsubst %_links_converted_uniq.txt,%_commons_u
 run/best_guesses_uniq_combined.txt: $(patsubst %_links_converted_uniq.txt,%_best_guesses_uniq.txt,$(ALL_LANG_CONVERTED_UNIQ))
 	$(TIMED) "combine best_guesses" -- sh -c '\
 		FILES=$$(./make_lang_targets.sh wikipedia ALL_LANG_CONVERTED_UNIQ | sed '"'"'s/_links_converted_uniq\.txt/_best_guesses_uniq.txt/g'"'"'); \
+		if [ -z "$$FILES" ]; then echo "Error: no language files found" >&2; exit 1; fi; \
+		$(SORT) $$FILES | uniq -c | $(SORT) -rn > $@'
+
+run/mul_guesses_uniq_combined.txt: $(patsubst %_links_converted_uniq.txt,%_mul_guesses_uniq.txt,$(ALL_LANG_CONVERTED_UNIQ))
+	$(TIMED) "combine mul_guesses" -- sh -c '\
+		FILES=$$(./make_lang_targets.sh wikipedia ALL_LANG_CONVERTED_UNIQ | sed '"'"'s/_links_converted_uniq\.txt/_mul_guesses_uniq.txt/g'"'"'); \
+		if [ -z "$$FILES" ]; then echo "Error: no language files found" >&2; exit 1; fi; \
+		$(SORT) $$FILES | uniq -c | $(SORT) -rn > $@'
+
+run/mul_ambiguous_uniq_combined.txt: $(patsubst %_links_converted_uniq.txt,%_mul_ambiguous_uniq.txt,$(ALL_LANG_CONVERTED_UNIQ))
+	$(TIMED) "combine mul_ambiguous" -- sh -c '\
+		FILES=$$(./make_lang_targets.sh wikipedia ALL_LANG_CONVERTED_UNIQ | sed '"'"'s/_links_converted_uniq\.txt/_mul_ambiguous_uniq.txt/g'"'"'); \
 		if [ -z "$$FILES" ]; then echo "Error: no language files found" >&2; exit 1; fi; \
 		$(SORT) $$FILES | uniq -c | $(SORT) -rn > $@'
 

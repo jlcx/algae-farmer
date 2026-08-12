@@ -121,6 +121,9 @@ fn process_entity(
         }
     }
 
+    // Per-language rows. The value is a *page title*, which MediaWiki keeps
+    // unique within a wiki, so these keys are unambiguous — this is the
+    // high-precision path wp_convert matches link targets against.
     for lang in label_langs {
         if lang == "best" || lang == "doi" || lang == "mul" {
             continue;
@@ -132,12 +135,46 @@ fn process_entity(
                 if let Some(title) = sitelink.get("title").and_then(|v| v.as_str()) {
                     use std::fmt::Write as _;
                     let _ = writeln!(labels_lines, "{lang}\t{title}\t{id}");
-                    if best_label.is_none() {
-                        best_label = Some(title.to_string());
-                    }
                 }
             }
         }
+    }
+
+    // Wikidata's language-neutral label, which per-language labels are
+    // increasingly being consolidated into. Unlike the rows above this is a
+    // name rather than a page title, so it is *not* unique across entities;
+    // wp_convert flags colliding keys instead of silently picking a winner.
+    let mul_label = wikidata_labels
+        .and_then(|l| l.get("mul"))
+        .and_then(|l| l.get("value"))
+        .and_then(|v| v.as_str());
+    if let Some(value) = mul_label {
+        use std::fmt::Write as _;
+        let _ = writeln!(labels_lines, "mul\t{value}\t{id}");
+    }
+
+    // `best`: one readable label per entity, also the label column of
+    // items.csv. Scanned in LANG_ORDER — deliberately the larger, mostly
+    // Latin-script editions — and not in `label_langs` order, which is
+    // alphabetical by language code and so picked whichever edition sorted
+    // earliest (in practice ar and arz far more often than en).
+    if let Some(sl) = sitelinks {
+        for lang in constants::LANG_ORDER {
+            if let Some(title) = sl
+                .get(&format!("{lang}wiki"))
+                .and_then(|s| s.get("title"))
+                .and_then(|v| v.as_str())
+            {
+                best_label = Some(title.to_string());
+                break;
+            }
+        }
+    }
+
+    // With no sitelink in those editions, prefer the curated language-neutral
+    // name over an arbitrary per-language label.
+    if best_label.is_none() {
+        best_label = mul_label.map(str::to_string);
     }
 
     if best_label.is_none() {

@@ -33,9 +33,18 @@ fn is_qid(s: &str) -> bool {
     (first == b'Q' || first == b'q') && s[1..].chars().all(|c| c.is_ascii_digit())
 }
 
-fn load_qid_dict(run_dir: &Path, memory_ceiling: u8) -> Result<QidDict> {
+/// Loads wd_labels.tsv into a per-language title -> QID map.
+///
+/// Also returns the set of `mul` keys that more than one entity claims. Unlike
+/// the per-language keys, which are page titles and unique within a wiki, a
+/// `mul` value is a name and several entities can share one ("H", "Groningen").
+/// Those keys are kept — the first QID seen wins, which is stable because the
+/// dump order is — but they are reported so hits on them can be segregated
+/// downstream instead of silently becoming edges.
+fn load_qid_dict(run_dir: &Path, memory_ceiling: u8) -> Result<(QidDict, HashSet<String>)> {
     let labels_path = run_dir.join("wd_labels.tsv");
     let mut dict: QidDict = HashMap::new();
+    let mut mul_ambiguous: HashSet<String> = HashSet::new();
 
     let sys = System::new_all();
     let total_mem = sys.total_memory();
@@ -63,9 +72,22 @@ fn load_qid_dict(run_dir: &Path, memory_ceiling: u8) -> Result<QidDict> {
         let title = parts[1];
         let qid = parts[2];
 
-        dict.entry(lang.to_string())
-            .or_default()
-            .insert(title.to_string(), qid.to_string());
+        let entry = dict.entry(lang.to_string()).or_default();
+        if lang == "mul" {
+            // First writer wins, so a later duplicate cannot quietly relabel an
+            // entity; record the collision instead.
+            match entry.get(title) {
+                Some(existing) if existing != qid => {
+                    mul_ambiguous.insert(title.to_string());
+                }
+                Some(_) => {}
+                None => {
+                    entry.insert(title.to_string(), qid.to_string());
+                }
+            }
+        } else {
+            entry.insert(title.to_string(), qid.to_string());
+        }
     }
 
     let used_mem = sys.used_memory();
@@ -74,8 +96,14 @@ fn load_qid_dict(run_dir: &Path, memory_ceiling: u8) -> Result<QidDict> {
         dict.len(),
         used_mem / 1_048_576
     );
+    let mul_total = dict.get("mul").map_or(0, |d| d.len());
+    log::info!(
+        "mul labels: {mul_total} distinct, {} shared by more than one entity ({:.2}%)",
+        mul_ambiguous.len(),
+        100.0 * mul_ambiguous.len() as f64 / mul_total.max(1) as f64
+    );
 
-    Ok(dict)
+    Ok((dict, mul_ambiguous))
 }
 
 fn load_redirects(path: &Path) -> Result<HashMap<String, String>> {
@@ -139,6 +167,7 @@ fn process_language(
     run_dir: &Path,
     qid_dict: &QidDict,
     commons_files: &HashSet<String>,
+    mul_ambiguous: &HashSet<String>,
     max_redirect_depth: usize,
 ) -> Result<()> {
     let wikilinks_path = run_dir.join(format!("{lang}_wikilinks.txt"));
@@ -155,6 +184,8 @@ fn process_language(
     let failed_path = run_dir.join(format!("{lang}_conv_failed.txt"));
     let commons_path = run_dir.join(format!("{lang}_commons.txt"));
     let best_path = run_dir.join(format!("{lang}_best_guesses.txt"));
+    let mul_path = run_dir.join(format!("{lang}_mul_guesses.txt"));
+    let mul_amb_path = run_dir.join(format!("{lang}_mul_ambiguous.txt"));
     let src_not_found_path = run_dir.join(format!("{lang}_src_not_found.txt"));
     let chain_exceeded_path = run_dir.join(format!("{lang}_redirect_chain_exceeded.txt"));
 
@@ -162,11 +193,14 @@ fn process_language(
     let mut failed_out = BufWriter::new(std::fs::File::create(&failed_path)?);
     let mut commons_out = BufWriter::new(std::fs::File::create(&commons_path)?);
     let mut best_out = BufWriter::new(std::fs::File::create(&best_path)?);
+    let mut mul_out = BufWriter::new(std::fs::File::create(&mul_path)?);
+    let mut mul_amb_out = BufWriter::new(std::fs::File::create(&mul_amb_path)?);
     let mut src_not_found_out = BufWriter::new(std::fs::File::create(&src_not_found_path)?);
     let mut chain_exceeded_out = BufWriter::new(std::fs::File::create(&chain_exceeded_path)?);
 
     let lang_dict = qid_dict.get(lang);
     let best_dict = qid_dict.get("best");
+    let mul_dict = qid_dict.get("mul");
 
     let wikilinks_file = std::fs::File::open(&wikilinks_path)?;
     let reader = BufReader::new(wikilinks_file);
@@ -175,6 +209,8 @@ fn process_language(
     let mut converted = 0u64;
     let mut failed = 0u64;
     let mut wikt_count = 0u64;
+    let mut mul_count = 0u64;
+    let mut mul_amb_count = 0u64;
 
     for line in reader.lines() {
         let line = match line {
@@ -300,7 +336,29 @@ fn process_language(
             }
         }
 
-        // h. Best-label fallback
+        // h. Language-neutral (`mul`) label fallback, tried ahead of `best` so
+        //    that `best` sees only what mul missed — the two volumes then read
+        //    directly as mul's incremental value. A hit on a name that several
+        //    entities share is kept but segregated, since which QID it resolves
+        //    to is an artifact of dump order rather than evidence.
+        let mul_hit = mul_dict.and_then(|d| {
+            d.get(link_target)
+                .map(|qid| (link_target, qid))
+                .or_else(|| d.get(&cap_target).map(|qid| (cap_target.as_str(), qid)))
+        });
+        if let Some((matched, qid)) = mul_hit {
+            if mul_ambiguous.contains(matched) {
+                writeln!(mul_amb_out, "{src_qid}\t{qid}")?;
+                mul_amb_count += 1;
+            } else {
+                writeln!(mul_out, "{src_qid}\t{qid}")?;
+                mul_count += 1;
+            }
+            converted += 1;
+            continue;
+        }
+
+        // i. Best-label fallback
         if let Some(qid) = best_dict.and_then(|d| d.get(link_target)) {
             writeln!(best_out, "{src_qid}\t{qid}")?;
             converted += 1;
@@ -312,19 +370,20 @@ fn process_language(
             continue;
         }
 
-        // i. Wiktionary link
+        // j. Wiktionary link
         if link_target.starts_with("Wikt:") || link_target.starts_with("wikt:") {
             wikt_count += 1;
             continue;
         }
 
-        // j. Failure
+        // k. Failure
         writeln!(failed_out, "{src_qid}\t{link_target}\t{original_link}")?;
         failed += 1;
     }
 
     log::info!(
-        "[{lang}] Done. total={count}, converted={converted}, failed={failed}, wikt={wikt_count}"
+        "[{lang}] Done. total={count}, converted={converted}, failed={failed}, \
+         wikt={wikt_count}, mul={mul_count}, mul_ambiguous={mul_amb_count}"
     );
     Ok(())
 }
@@ -336,7 +395,7 @@ fn main() -> Result<()> {
     let languages = languages::load_languages(run_dir, "wikipedia")?;
     log::info!("Processing {} Wikipedia languages", languages.len());
 
-    let qid_dict = load_qid_dict(run_dir, 80)?;
+    let (qid_dict, mul_ambiguous) = load_qid_dict(run_dir, 80)?;
     let commons_files = load_commons_files(&run_dir.join("commons_files.txt"))?;
 
     let num_workers = thread::available_parallelism()
@@ -354,10 +413,11 @@ fn main() -> Result<()> {
             let rx = rx.clone();
             let qid_dict = &qid_dict;
             let commons_files = &commons_files;
+            let mul_ambiguous = &mul_ambiguous;
             handles.push(s.spawn(move || -> Result<()> {
                 for lang in rx {
                     log::info!("[{lang}] Starting link conversion");
-                    process_language(lang, run_dir, qid_dict, commons_files, 5)?;
+                    process_language(lang, run_dir, qid_dict, commons_files, mul_ambiguous, 5)?;
                 }
                 Ok(())
             }));

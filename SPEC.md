@@ -124,11 +124,11 @@ This list replaces the multistream index that used to supply it. The index cover
 
 1. **Parse JSON** -- strip trailing comma and newline, then parse as JSON.
 2. **Extract labels** -- For each language in the label language chain (derived from the Wikipedia list in `run/languages.json`, plus `mul`, `doi`, and `best`):
-   - If the entity has a sitelink for `{lang}wiki`, use that article title as the label for that language.
-   - The first label found along the chain becomes the `best` label.
-   - If no sitelink label is found for a language but a Wikidata label exists, use that for `best` (if `best` is still unset).
+   - If the entity has a sitelink for `{lang}wiki`, use that article title as the label for that language. These keys are page titles, which MediaWiki keeps unique within a wiki, so they are unambiguous -- this is the high-precision path `wp_convert` matches link targets against.
+   - `mul`: Wikidata's language-neutral label (`labels.mul.value`), the canonical name that per-language labels are increasingly being consolidated into. Unlike the rows above this is a *name*, not a page title, so several entities can share one; see §2.5 for how collisions are handled.
    - If the entity has a P356 (DOI) claim, extract its value as the `doi` label.
-   - Fallback: if no label found at all, `best` = the entity's QID.
+   - `best` -- one readable label per entity, also the label column of `items.csv`. Resolved in order: the first sitelink title found scanning `LANG_ORDER` (deliberately the larger, mostly Latin-script editions); else the `mul` label; else the first Wikidata label along `LANG_ORDER`; else any Wikidata label; else the entity's QID.
+     - `best` is scanned in `LANG_ORDER`, *not* in label-chain order. The chain is alphabetical by language code, which meant `best` was previously taken from whichever edition sorted earliest -- in practice `ar` and `arz` far more often than `en` (Q31's `best` was the Abkhaz "Бельгиа"). `LANG_ORDER` restores the original intent of preferring large, readable editions.
 3. **Extract relationships** -- For every claim on the entity (items, properties, and lexemes), if the mainsnak datatype is `wikibase-item` or `wikibase-property`:
    - Record `(entity_id, target_id, property_id)`.
    - Also traverse qualifiers on each claim, extracting the same tuple shape for qualifier values of allowed datatypes.
@@ -222,9 +222,14 @@ For each Wikipedia language in `run/languages.json`, open `{lang}_wikilinks.txt`
    e. Commons detection: if the target has a prefix and the unprefixed part (with or without `File:`) is in `commons_files`, write to `{lang}_commons.txt` instead.
    f. Cross-language QID link: if the target has a language prefix (e.g., `de:Berlin`) and the suffix is a direct QID (e.g., `d:Q42`), use it directly.
    g. Cross-language title lookup: if the target has a language prefix and the suffix exists in `qid_dict[that_language]`, resolve it.
-   h. Best-label fallback: look up in `qid_dict['best']`. Write to `{lang}_best_guesses.txt`.
-   i. Wiktionary link: if prefix is `Wikt`, count it separately (no output).
-   j. Failure: write to `{lang}_conv_failed.txt` as `src_qid\tlink_target\toriginal_link`.
+   h. Language-neutral (`mul`) fallback: look up in `qid_dict['mul']`. Tried *ahead of* `best`, so `best` sees only what `mul` missed and the two volumes read directly as `mul`'s incremental value. Unambiguous hits go to `{lang}_mul_guesses.txt`; hits on a name claimed by more than one entity go to `{lang}_mul_ambiguous.txt`.
+   i. Best-label fallback: look up in `qid_dict['best']`. Write to `{lang}_best_guesses.txt`.
+   j. Wiktionary link: if prefix is `Wikt`, count it separately (no output).
+   k. Failure: write to `{lang}_conv_failed.txt` as `src_qid\tlink_target\toriginal_link`.
+
+**`mul` ambiguity.** A `mul` label is a name, so entities can collide on one ("H", "Groningen"). `load_qid_dict` keeps the first QID seen -- stable, since dump order is -- and records the colliding keys rather than letting a later duplicate silently relabel an entity. Hits on those keys are kept but segregated into `{lang}_mul_ambiguous.txt`, because which QID they resolve to is an artifact of dump order rather than evidence. The distinct/ambiguous counts are logged at startup.
+
+**Neither `mul` nor `best` enters the link graph.** Both are diagnostic streams, combined for inspection but never merged into `{lang}_links_converted.txt`, so they cannot become `wp_links` edges. Promoting either is a deliberate future decision to be made on the measured volumes.
 
 **Title normalization (`capfirst`):** Capitalizes only the first character of the title (or the first character after a known language-code prefix), leaving all other characters unchanged.
 
@@ -238,6 +243,8 @@ For each Wikipedia language in `run/languages.json`, open `{lang}_wikilinks.txt`
 | `{lang}_conv_failed.txt` | TSV | `src_qid\tlink_target\toriginal_link` |
 | `{lang}_commons.txt` | TSV | `src_qid\tcommons_filename` |
 | `{lang}_best_guesses.txt` | TSV | `src_qid\tdst_qid` |
+| `{lang}_mul_guesses.txt` | TSV | `src_qid\tdst_qid` -- `mul` hits on a name claimed by exactly one entity |
+| `{lang}_mul_ambiguous.txt` | TSV | `src_qid\tdst_qid` -- `mul` hits on a shared name; resolution is dump-order dependent |
 | `{lang}_src_not_found.txt` | Plain text | One title per line |
 
 ### 2.6 Post-conversion aggregation
