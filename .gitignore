@@ -13,3 +13,8 @@
 
 # Dated query-result exports (e.g. wp_not_wd_20260420.csv, ~100 MB each)
 /queries/*.csv
+
+# Stamp files dropped in the repo root by the DB load targets. Those targets
+# are .PHONY and so re-run regardless, which makes the stamps write-only
+# litter — but `make all` leaves 15 of them lying next to the source.
+/*_loaded
