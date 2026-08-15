@@ -229,7 +229,7 @@ For each Wikipedia language in `run/languages.json`, open `{lang}_wikilinks.txt`
 
 **`mul` ambiguity.** A `mul` label is a name, so entities can collide on one ("H", "Groningen"). `load_qid_dict` keeps the first QID seen -- stable, since dump order is -- and records the colliding keys rather than letting a later duplicate silently relabel an entity. Hits on those keys are kept but segregated into `{lang}_mul_ambiguous.txt`, because which QID they resolve to is an artifact of dump order rather than evidence. The distinct/ambiguous counts are logged at startup.
 
-**Neither `mul` nor `best` enters the link graph.** Both are diagnostic streams, combined for inspection but never merged into `{lang}_links_converted.txt`, so they cannot become `wp_links` edges. Promoting either is a deliberate future decision to be made on the measured volumes.
+**Neither `mul` nor `best` enters the link graph.** Both are diagnostic streams, combined for inspection but never merged into `{lang}_links_converted.txt`, so they cannot become `wp_links` edges. Promoting either is a deliberate future decision, tracked in `TASK_mul_promotion.md` — which records the constraints already fixed and, importantly, why stream volume is *not* the criterion for it.
 
 **Title normalization (`capfirst`):** Capitalizes only the first character of the title (or the first character after a known language-code prefix), leaving all other characters unchanged.
 
