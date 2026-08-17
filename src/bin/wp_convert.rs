@@ -9,6 +9,30 @@ use sysinfo::System;
 
 type QidDict = HashMap<String, HashMap<String, String>>;
 
+// Resolution method ids for the side-channel, mirroring the append-only
+// resolution_methods table (queries/db_commands.sql). Only degraded successful
+// resolutions are recorded; direct/capfirst/whitespace and depth-1 redirects
+// are routine MediaWiki mechanics and stay unrecorded on volume grounds.
+const METHOD_REDIRECT_DEEP: u8 = 1;
+const METHOD_CROSSLANG_QID: u8 = 2;
+const METHOD_CROSSLANG_TITLE: u8 = 3;
+
+/// Maximum stored length (chars) for diagnostic title/target fields, matching
+/// the CHECK constraints on the obs_* tables.
+const MAX_DIAG_FIELD_CHARS: usize = 384;
+
+/// Make a title/target safe for the diagnostic files' \copy load path
+/// (tab-delimited, quoting disabled via QUOTE E'\b'): the delimiter, line
+/// separators, and the quote byte are replaced with spaces. Values longer
+/// than the obs_* length cap are dropped (None) — real titles are <= 255
+/// bytes, anything longer is wikitext junk — and counted by the caller.
+fn sanitize_diag_field(s: &str) -> Option<String> {
+    if s.chars().count() > MAX_DIAG_FIELD_CHARS {
+        return None;
+    }
+    Some(s.replace(['\t', '\n', '\r', '\u{8}'], " "))
+}
+
 fn capfirst(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {
@@ -141,25 +165,32 @@ fn load_commons_files(path: &Path) -> Result<HashSet<String>> {
     Ok(files)
 }
 
+enum RedirectOutcome {
+    /// Non-redirect title reached after `depth` hops (0 = not a redirect).
+    Resolved { title: String, depth: usize },
+    Cycle,
+    DepthExceeded,
+}
+
 fn resolve_redirect(
     title: &str,
     redirects: &HashMap<String, String>,
     max_depth: usize,
-) -> (Option<String>, bool) {
+) -> RedirectOutcome {
     let mut current = title.to_string();
     let mut visited = HashSet::new();
 
-    for _ in 0..max_depth {
+    for depth in 0..max_depth {
         if visited.contains(&current) {
-            return (None, true); // cycle
+            return RedirectOutcome::Cycle;
         }
         visited.insert(current.clone());
         match redirects.get(&current) {
             Some(target) => current = target.clone(),
-            None => return (Some(current), false),
+            None => return RedirectOutcome::Resolved { title: current, depth },
         }
     }
-    (None, true) // exceeded depth
+    RedirectOutcome::DepthExceeded
 }
 
 fn process_language(
@@ -188,6 +219,7 @@ fn process_language(
     let mul_amb_path = run_dir.join(format!("{lang}_mul_ambiguous.txt"));
     let src_not_found_path = run_dir.join(format!("{lang}_src_not_found.txt"));
     let chain_exceeded_path = run_dir.join(format!("{lang}_redirect_chain_exceeded.txt"));
+    let witness_methods_path = run_dir.join(format!("{lang}_witness_methods.txt"));
 
     let mut converted_out = BufWriter::new(std::fs::File::create(&converted_path)?);
     let mut failed_out = BufWriter::new(std::fs::File::create(&failed_path)?);
@@ -197,6 +229,7 @@ fn process_language(
     let mut mul_amb_out = BufWriter::new(std::fs::File::create(&mul_amb_path)?);
     let mut src_not_found_out = BufWriter::new(std::fs::File::create(&src_not_found_path)?);
     let mut chain_exceeded_out = BufWriter::new(std::fs::File::create(&chain_exceeded_path)?);
+    let mut witness_methods_out = BufWriter::new(std::fs::File::create(&witness_methods_path)?);
 
     let lang_dict = qid_dict.get(lang);
     let best_dict = qid_dict.get("best");
@@ -211,6 +244,8 @@ fn process_language(
     let mut wikt_count = 0u64;
     let mut mul_count = 0u64;
     let mut mul_amb_count = 0u64;
+    // Diagnostic rows dropped by the emit-time length filter (sanitize_diag_field)
+    let mut len_rejected = 0u64;
 
     for line in reader.lines() {
         let line = match line {
@@ -230,7 +265,10 @@ fn process_language(
         let src_qid = match lang_dict.and_then(|d| d.get(source_title)) {
             Some(q) => q.clone(),
             None => {
-                writeln!(src_not_found_out, "{source_title}")?;
+                match sanitize_diag_field(source_title) {
+                    Some(t) => writeln!(src_not_found_out, "{t}")?,
+                    None => len_rejected += 1,
+                }
                 continue;
             }
         };
@@ -256,26 +294,35 @@ fn process_language(
         // c. Redirect resolution
         let mut resolved = false;
         for try_target in &[link_target.to_string(), cap_target.clone()] {
-            let (resolved_title, exceeded) =
-                resolve_redirect(try_target, &redirects, max_redirect_depth);
-            if exceeded {
-                writeln!(chain_exceeded_out, "{try_target}")?;
-            }
-            if let Some(title) = resolved_title {
-                if &title != try_target {
-                    if let Some(qid) = lang_dict.and_then(|d| d.get(&title)) {
-                        writeln!(converted_out, "{src_qid}\t{qid}")?;
-                        converted += 1;
-                        resolved = true;
-                        break;
+            match resolve_redirect(try_target, &redirects, max_redirect_depth) {
+                outcome @ (RedirectOutcome::Cycle | RedirectOutcome::DepthExceeded) => {
+                    let kind = match outcome {
+                        RedirectOutcome::Cycle => "cycle",
+                        _ => "depth_exceeded",
+                    };
+                    match sanitize_diag_field(try_target) {
+                        Some(t) => writeln!(chain_exceeded_out, "{t}\t{kind}")?,
+                        None => len_rejected += 1,
                     }
-                    // Also try capfirst of resolved title
-                    let cap_resolved = capfirst(&title);
-                    if let Some(qid) = lang_dict.and_then(|d| d.get(&cap_resolved)) {
-                        writeln!(converted_out, "{src_qid}\t{qid}")?;
-                        converted += 1;
-                        resolved = true;
-                        break;
+                }
+                RedirectOutcome::Resolved { title, depth } => {
+                    if &title != try_target {
+                        let qid = lang_dict.and_then(|d| {
+                            d.get(&title).or_else(|| d.get(&capfirst(&title)))
+                        });
+                        if let Some(qid) = qid {
+                            writeln!(converted_out, "{src_qid}\t{qid}")?;
+                            // Chains of >= 2 hops are a title-drift signal.
+                            if depth >= 2 {
+                                writeln!(
+                                    witness_methods_out,
+                                    "{src_qid}\t{qid}\t{METHOD_REDIRECT_DEEP}"
+                                )?;
+                            }
+                            converted += 1;
+                            resolved = true;
+                            break;
+                        }
                     }
                 }
             }
@@ -315,21 +362,21 @@ fn process_language(
 
             let suffix = suffix.trim();
             if (prefix == "d" || prefix == "D") && is_qid(suffix) {
-                writeln!(converted_out, "{src_qid}\t{}", suffix.to_uppercase())?;
+                let dst = suffix.to_uppercase();
+                writeln!(converted_out, "{src_qid}\t{dst}")?;
+                writeln!(witness_methods_out, "{src_qid}\t{dst}\t{METHOD_CROSSLANG_QID}")?;
                 converted += 1;
                 continue;
             }
 
             // g. Cross-language title lookup
             if let Some(cross_dict) = qid_dict.get(prefix) {
-                if let Some(qid) = cross_dict.get(suffix) {
+                let qid = cross_dict
+                    .get(suffix)
+                    .or_else(|| cross_dict.get(&capfirst(suffix)));
+                if let Some(qid) = qid {
                     writeln!(converted_out, "{src_qid}\t{qid}")?;
-                    converted += 1;
-                    continue;
-                }
-                let cap_suffix = capfirst(suffix);
-                if let Some(qid) = cross_dict.get(&cap_suffix) {
-                    writeln!(converted_out, "{src_qid}\t{qid}")?;
+                    writeln!(witness_methods_out, "{src_qid}\t{qid}\t{METHOD_CROSSLANG_TITLE}")?;
                     converted += 1;
                     continue;
                 }
@@ -377,13 +424,22 @@ fn process_language(
         }
 
         // k. Failure
-        writeln!(failed_out, "{src_qid}\t{link_target}\t{original_link}")?;
+        match (
+            sanitize_diag_field(link_target),
+            sanitize_diag_field(&original_link),
+        ) {
+            (Some(target), Some(original)) => {
+                writeln!(failed_out, "{src_qid}\t{target}\t{original}")?;
+            }
+            _ => len_rejected += 1,
+        }
         failed += 1;
     }
 
     log::info!(
         "[{lang}] Done. total={count}, converted={converted}, failed={failed}, \
-         wikt={wikt_count}, mul={mul_count}, mul_ambiguous={mul_amb_count}"
+         wikt={wikt_count}, mul={mul_count}, mul_ambiguous={mul_amb_count}, \
+         len_rejected={len_rejected}"
     );
     Ok(())
 }

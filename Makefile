@@ -55,11 +55,11 @@ ALL_DBP_MAPPINGS        := $(shell ./make_lang_targets.sh dbpedia ALL_DBP_MAPPIN
 # Top-level targets
 # ============================================================
 
-.PHONY: all clean build download check-downloads download-wikidata download-commons download-wikipedia download-wiktionary download-abstractwiki download-wikifunctions download-dbpedia wp_links_loaded wd_links_loaded wd_entities_loaded wd_labels_loaded wd_dates_loaded wd_coords_loaded lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded wkt_loaded aw_loaded wf_loaded dbp_loaded
+.PHONY: all clean build download check-downloads download-wikidata download-commons download-wikipedia download-wiktionary download-abstractwiki download-wikifunctions download-dbpedia wp_links_loaded wd_links_loaded wd_entities_loaded wd_labels_loaded wd_dates_loaded wd_coords_loaded lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded wkt_loaded aw_loaded wf_loaded dbp_loaded obs_best_guess_links_loaded obs_conv_failures_loaded obs_src_not_found_loaded obs_redirect_anomalies_loaded wp_witness_methods_loaded obs_failed_targets_refreshed
 
 all:
 	@$(MAKE) --no-print-directory -j1 run/languages.json
-	@$(MAKE) --no-print-directory -j1 wp_links_loaded wd_links_loaded wd_entities_loaded wd_labels_loaded wd_dates_loaded wd_coords_loaded lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded wkt_loaded aw_loaded wf_loaded dbp_loaded
+	@$(MAKE) --no-print-directory -j1 wp_links_loaded wd_links_loaded wd_entities_loaded wd_labels_loaded wd_dates_loaded wd_coords_loaded lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded wkt_loaded aw_loaded wf_loaded dbp_loaded obs_loaded
 
 build:
 	$(TIMED) "cargo build --release" -- env RUSTFLAGS="-C target-cpu=native" cargo build --release
@@ -237,6 +237,17 @@ run/%_mul_ambiguous_uniq.txt: run/%_mul_ambiguous.txt
 run/%_dsts_failed_uniq.txt: run/%_conv_failed_uniq.txt
 	$(TIMED) "sort/uniq $*_dsts_failed" -- sh -c 'cut -f2 $< | $(SORT) | uniq > $@'
 
+# Obstruction diagnostics (loaded into the obs_* tables; raw files are
+# byproducts of wp_convert, like _conv_failed above)
+run/%_src_not_found_uniq.txt: run/%_src_not_found.txt
+	$(TIMED) "sort/uniq $*_src_not_found" -- sh -c '$(SORT) $< | uniq > $@'
+
+run/%_redirect_chain_exceeded_uniq.txt: run/%_redirect_chain_exceeded.txt
+	$(TIMED) "sort/uniq $*_redirect_chain_exceeded" -- sh -c '$(SORT) $< | uniq > $@'
+
+run/%_witness_methods_uniq.txt: run/%_witness_methods.txt
+	$(TIMED) "sort/uniq $*_witness_methods" -- sh -c '$(SORT) $< | uniq > $@'
+
 # ============================================================
 # Cross-language combination
 # ============================================================
@@ -246,6 +257,12 @@ run/%_dsts_failed_uniq.txt: run/%_conv_failed_uniq.txt
 # emits src,dst,"{id,...}" rows for \copy. Replaces sort | uniq -c | convert2sv.
 run/wp_links_witnesses.csv: $(ALL_LANG_CONVERTED_UNIQ) | build
 	$(TIMED) "wp_aggregate (all languages)" -- $(WP_AGG) --db-url "host=localhost dbname=$(DBNAME)" --output $@
+
+# Best-guess edges get the same aggregated shape as wp_links (same merge,
+# different input suffix) but land in a separate table so no query can
+# mistake them for consensus.
+run/obs_best_guess_witnesses.csv: $(patsubst %_links_converted_uniq.txt,%_best_guesses_uniq.txt,$(ALL_LANG_CONVERTED_UNIQ)) | build
+	$(TIMED) "wp_aggregate (best guesses)" -- $(WP_AGG) --db-url "host=localhost dbname=$(DBNAME)" --input-suffix _best_guesses_uniq.txt --output $@
 
 run/conv_failed_uniq_combined.txt: $(patsubst %_links_converted_uniq.txt,%_conv_failed_uniq.txt,$(ALL_LANG_CONVERTED_UNIQ))
 	$(TIMED) "combine conv_failed" -- sh -c '\
@@ -583,6 +600,50 @@ dbp_loaded: run/dbp/combined_mappings.tsv
 			" && touch $@'
 
 # ============================================================
+# Obstruction record loading (TASK_obstruction_records.md)
+# ============================================================
+# Per-language tables go through scripts/load_obs.sh (staging + languages.id
+# join + length filter with logged reject counts); the aggregated best-guess
+# table follows the wp_links pattern directly.
+
+OBS_CONV_FAILED_UNIQ      := $(patsubst %_links_converted_uniq.txt,%_conv_failed_uniq.txt,$(ALL_LANG_CONVERTED_UNIQ))
+OBS_SRC_NOT_FOUND_UNIQ    := $(patsubst %_links_converted_uniq.txt,%_src_not_found_uniq.txt,$(ALL_LANG_CONVERTED_UNIQ))
+OBS_REDIRECT_ANOM_UNIQ    := $(patsubst %_links_converted_uniq.txt,%_redirect_chain_exceeded_uniq.txt,$(ALL_LANG_CONVERTED_UNIQ))
+OBS_WITNESS_METHODS_UNIQ  := $(patsubst %_links_converted_uniq.txt,%_witness_methods_uniq.txt,$(ALL_LANG_CONVERTED_UNIQ))
+
+obs_best_guess_links_loaded: run/obs_best_guess_witnesses.csv
+	$(TIMED) "load obs_best_guess_links" -- sh -c '\
+		$(PSQL) -c " \
+			DROP INDEX IF EXISTS obs_bgl_witnesses_gin; \
+			ALTER TABLE obs_best_guess_links DROP CONSTRAINT IF EXISTS obs_best_guess_links_pkey; \
+			TRUNCATE obs_best_guess_links; \
+			" && \
+		$(PSQL) -c "\copy obs_best_guess_links (src, dst, witnesses) FROM '"'"'$<'"'"' CSV" && \
+		$(PSQL) -c " \
+			SET maintenance_work_mem = '"'"'4GB'"'"'; \
+			ALTER TABLE obs_best_guess_links ADD PRIMARY KEY (src, dst); \
+			CREATE INDEX obs_bgl_witnesses_gin ON obs_best_guess_links USING GIN (witnesses); \
+			" && touch $@'
+
+obs_conv_failures_loaded: $(OBS_CONV_FAILED_UNIQ)
+	$(TIMED) "load obs_conv_failures" -- sh -c 'DBNAME=$(DBNAME) ./scripts/load_obs.sh conv_failures $^ && touch $@'
+
+obs_src_not_found_loaded: $(OBS_SRC_NOT_FOUND_UNIQ)
+	$(TIMED) "load obs_src_not_found" -- sh -c 'DBNAME=$(DBNAME) ./scripts/load_obs.sh src_not_found $^ && touch $@'
+
+obs_redirect_anomalies_loaded: $(OBS_REDIRECT_ANOM_UNIQ)
+	$(TIMED) "load obs_redirect_anomalies" -- sh -c 'DBNAME=$(DBNAME) ./scripts/load_obs.sh redirect_anomalies $^ && touch $@'
+
+wp_witness_methods_loaded: $(OBS_WITNESS_METHODS_UNIQ)
+	$(TIMED) "load wp_witness_methods" -- sh -c 'DBNAME=$(DBNAME) ./scripts/load_obs.sh witness_methods $^ && touch $@'
+
+obs_failed_targets_refreshed: obs_conv_failures_loaded
+	$(TIMED) "refresh obs_failed_targets" -- sh -c '$(PSQL) -c "REFRESH MATERIALIZED VIEW obs_failed_targets;" && touch $@'
+
+.PHONY: obs_loaded
+obs_loaded: obs_best_guess_links_loaded obs_conv_failures_loaded obs_src_not_found_loaded obs_redirect_anomalies_loaded wp_witness_methods_loaded obs_failed_targets_refreshed
+
+# ============================================================
 # Schema setup
 # ============================================================
 
@@ -599,3 +660,4 @@ clean:
 	rm -f wp_links_loaded wd_links_loaded wd_entities_loaded wd_labels_loaded wd_dates_loaded wd_coords_loaded wkt_loaded aw_loaded wf_loaded dbp_loaded lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded
 	rm -f lemma_loaded form_loaded lexeme_loaded sense_item_loaded sense_sense_loaded
 	rm -f wkt_loaded dbp_loaded
+	rm -f obs_best_guess_links_loaded obs_conv_failures_loaded obs_src_not_found_loaded obs_redirect_anomalies_loaded wp_witness_methods_loaded obs_failed_targets_refreshed

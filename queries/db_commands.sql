@@ -163,6 +163,91 @@ CREATE TABLE IF NOT EXISTS dbp_links (
     PRIMARY KEY (src, dst, predicate)
 );
 
+-- ============================================================
+-- Conversion obstruction records (TASK_obstruction_records.md)
+-- ============================================================
+-- Places where a language's local link structure fails to glue onto the
+-- shared QID graph. Loaded from wp_convert's per-language diagnostic files;
+-- language references use languages.id (append-only), never text codes.
+
+-- Append-only lookup for wp_witness_methods.method, same discipline as
+-- `languages`: ids are assigned once and never renumbered. Must stay in sync
+-- with the METHOD_* constants in src/bin/wp_convert.rs.
+CREATE TABLE IF NOT EXISTS resolution_methods (
+    id   SMALLINT PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL
+);
+INSERT INTO resolution_methods VALUES
+    (1, 'redirect_deep'),
+    (2, 'crosslang_qid'),
+    (3, 'crosslang_title')
+ON CONFLICT (id) DO NOTHING;
+
+-- Strategy (i): edges resolved only via the 'best' label fallback. Same shape
+-- as wp_links (a candidate edge stalk, aggregated with witness provenance)
+-- but kept in a separate table so no existing query can accidentally treat
+-- them as consensus.
+CREATE TABLE IF NOT EXISTS obs_best_guess_links (
+    src       VARCHAR(11) NOT NULL,
+    dst       VARCHAR(11) NOT NULL,
+    witnesses INT2[]      NOT NULL,
+    n         INT GENERATED ALWAYS AS (cardinality(witnesses)) STORED,
+    PRIMARY KEY (src, dst)
+);
+
+-- Strategy (k): unresolvable link targets. Stored per-language (long form):
+-- the source QID matters (which entities want the missing target), and
+-- cross-language aggregation of raw title strings is only meaningful for
+-- identical titles — that is provided by the obs_failed_targets view below,
+-- not by the storage format.
+CREATE TABLE IF NOT EXISTS obs_conv_failures (
+    lang_id INT2 NOT NULL REFERENCES languages(id),
+    src     VARCHAR(11) NOT NULL,
+    target  TEXT NOT NULL CHECK (length(target) <= 384),
+    PRIMARY KEY (lang_id, src, target)
+);
+
+-- Source articles with no QID mapping (unconnected pages).
+CREATE TABLE IF NOT EXISTS obs_src_not_found (
+    lang_id INT2 NOT NULL REFERENCES languages(id),
+    title   TEXT NOT NULL CHECK (length(title) <= 384),
+    PRIMARY KEY (lang_id, title)
+);
+
+-- Redirect chains exceeding the depth limit, and cycles.
+CREATE TABLE IF NOT EXISTS obs_redirect_anomalies (
+    lang_id INT2 NOT NULL REFERENCES languages(id),
+    title   TEXT NOT NULL,
+    kind    TEXT NOT NULL CHECK (kind IN ('depth_exceeded', 'cycle')),
+    PRIMARY KEY (lang_id, title)
+);
+
+-- Side-channel: degraded successful resolutions present in wp_links
+-- (crosslang strategies and redirect chains of depth >= 2; routine
+-- direct/capfirst/whitespace/depth-1 resolutions are not recorded).
+CREATE TABLE IF NOT EXISTS wp_witness_methods (
+    lang_id INT2 NOT NULL REFERENCES languages(id),
+    src     VARCHAR(11) NOT NULL,
+    dst     VARCHAR(11) NOT NULL,
+    method  INT2 NOT NULL REFERENCES resolution_methods(id),
+    PRIMARY KEY (lang_id, src, dst, method)
+);
+
+-- Cross-language failed-target aggregation (replaces
+-- dsts_failed_uniq_combined.txt as the queryable artifact). Created WITH NO
+-- DATA; populated by REFRESH (Makefile target obs_failed_targets_refreshed).
+CREATE MATERIALIZED VIEW IF NOT EXISTS obs_failed_targets AS
+SELECT target,
+       count(DISTINCT lang_id) AS n_langs,
+       count(*)                AS n_pairs
+FROM obs_conv_failures
+GROUP BY target
+WITH NO DATA;
+
+CREATE INDEX IF NOT EXISTS obs_bgl_witnesses_gin ON obs_best_guess_links USING GIN (witnesses);
+CREATE INDEX IF NOT EXISTS obs_cf_target ON obs_conv_failures (target);
+CREATE INDEX IF NOT EXISTS obs_ft_nlangs ON obs_failed_targets (n_langs DESC);
+
 -- Indexes for common query patterns
 CREATE INDEX IF NOT EXISTS idx_wp_links_src ON wp_links (src);
 CREATE INDEX IF NOT EXISTS idx_wp_links_dst ON wp_links (dst);

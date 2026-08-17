@@ -217,17 +217,21 @@ For each Wikipedia language in `run/languages.json`, open `{lang}_wikilinks.txt`
 2. **Target resolution** -- try these strategies in order, stopping at the first success:
    a. Direct lookup: `link_target` in `qid_dict[lang]`.
    b. Capitalized first letter: `capfirst(link_target)` in `qid_dict[lang]`.
-   c. Redirect resolution: `link_target` (or `capfirst`) found in redirects dict; follow the redirect chain iteratively (up to a configurable max depth, default 5) until a non-redirect title is found or the limit is reached. If the final resolved title is found in `qid_dict[lang]`, use it. Chains exceeding the depth limit or containing cycles are logged to `{lang}_redirect_chain_exceeded.txt`.
+   c. Redirect resolution: `link_target` (or `capfirst`) found in redirects dict; follow the redirect chain iteratively (up to a configurable max depth, default 5) until a non-redirect title is found or the limit is reached. If the final resolved title is found in `qid_dict[lang]`, use it. Chains exceeding the depth limit or containing cycles are logged to `{lang}_redirect_chain_exceeded.txt` with the anomaly kind (`depth_exceeded` or `cycle`). Successful resolutions through chains of depth >= 2 are additionally recorded in the `{lang}_witness_methods.txt` side-channel (method `redirect_deep`) as a title-drift signal.
    d. Whitespace normalization: replace `&nbsp;` with space, or `_` with space.
    e. Commons detection: if the target has a prefix and the unprefixed part (with or without `File:`) is in `commons_files`, write to `{lang}_commons.txt` instead.
-   f. Cross-language QID link: if the target has a language prefix (e.g., `de:Berlin`) and the suffix is a direct QID (e.g., `d:Q42`), use it directly.
-   g. Cross-language title lookup: if the target has a language prefix and the suffix exists in `qid_dict[that_language]`, resolve it.
+   f. Cross-language QID link: if the target has a language prefix (e.g., `de:Berlin`) and the suffix is a direct QID (e.g., `d:Q42`), use it directly. Recorded in the side-channel as `crosslang_qid`.
+   g. Cross-language title lookup: if the target has a language prefix and the suffix exists in `qid_dict[that_language]`, resolve it. Recorded in the side-channel as `crosslang_title`.
    h. Language-neutral (`mul`) fallback: look up in `qid_dict['mul']`. Tried *ahead of* `best`, so `best` sees only what `mul` missed and the two volumes read directly as `mul`'s incremental value. Unambiguous hits go to `{lang}_mul_guesses.txt`; hits on a name claimed by more than one entity go to `{lang}_mul_ambiguous.txt`.
    i. Best-label fallback: look up in `qid_dict['best']`. Write to `{lang}_best_guesses.txt`.
    j. Wiktionary link: if prefix is `Wikt`, count it separately (no output).
    k. Failure: write to `{lang}_conv_failed.txt` as `src_qid\tlink_target\toriginal_link`.
 
 **`mul` ambiguity.** A `mul` label is a name, so entities can collide on one ("H", "Groningen"). `load_qid_dict` keeps the first QID seen -- stable, since dump order is -- and records the colliding keys rather than letting a later duplicate silently relabel an entity. Hits on those keys are kept but segregated into `{lang}_mul_ambiguous.txt`, because which QID they resolve to is an artifact of dump order rather than evidence. The distinct/ambiguous counts are logged at startup.
+
+**Degraded-resolution side-channel (`{lang}_witness_methods.txt`).** Successful resolutions that reached `{lang}_links_converted.txt` through a degraded strategy — `crosslang_qid` (f), `crosslang_title` (g), or a redirect chain of depth >= 2 — are also written to a side-channel file as `src_qid\tdst_qid\tmethod_id`, with method ids from the append-only `resolution_methods` table (1 = redirect_deep, 2 = crosslang_qid, 3 = crosslang_title; kept in sync with the `METHOD_*` constants in `wp_convert`). Direct, capfirst, whitespace, and depth-1 redirect resolutions are deliberately *not* recorded: they are routine MediaWiki mechanics, and recording them would amount to per-witness provenance for nearly every link. The crosslang methods matter because they produce `wp_links` witnesses whose language has no article on the destination (coverage violations, §5.7).
+
+**Diagnostic field sanitization.** Title/target fields written to the failure-side files (`_conv_failed`, `_src_not_found`, `_redirect_chain_exceeded`) are sanitized at emit time so the files are safe for `\copy`: tab, newline, CR, and backspace (the disabled-quote byte in the load command) are replaced with spaces, and values longer than 384 characters — the obs_* tables' CHECK cap; real titles are <= 255 bytes — are dropped and counted (`len_rejected` in the per-language completion log line).
 
 **Neither `mul` nor `best` enters the link graph.** Both are diagnostic streams, combined for inspection but never merged into `{lang}_links_converted.txt`, so they cannot become `wp_links` edges. Promoting either is a deliberate future decision, tracked in `TASK_mul_promotion.md` — which records the constraints already fixed and, importantly, why stream volume is *not* the criterion for it.
 
@@ -246,6 +250,8 @@ For each Wikipedia language in `run/languages.json`, open `{lang}_wikilinks.txt`
 | `{lang}_mul_guesses.txt` | TSV | `src_qid\tdst_qid` -- `mul` hits on a name claimed by exactly one entity |
 | `{lang}_mul_ambiguous.txt` | TSV | `src_qid\tdst_qid` -- `mul` hits on a shared name; resolution is dump-order dependent |
 | `{lang}_src_not_found.txt` | Plain text | One title per line |
+| `{lang}_redirect_chain_exceeded.txt` | TSV | `title\tkind` -- kind is `depth_exceeded` or `cycle` |
+| `{lang}_witness_methods.txt` | TSV | `src_qid\tdst_qid\tmethod_id` -- degraded successful resolutions (side-channel) |
 
 ### 2.6 Post-conversion aggregation
 
@@ -255,6 +261,9 @@ sort {lang}_links_converted.txt | uniq > {lang}_links_converted_uniq.txt
 sort {lang}_conv_failed.txt | uniq > {lang}_conv_failed_uniq.txt
 sort {lang}_commons.txt | uniq > {lang}_commons_uniq.txt
 sort {lang}_best_guesses.txt | uniq > {lang}_best_guesses_uniq.txt
+sort {lang}_src_not_found.txt | uniq > {lang}_src_not_found_uniq.txt
+sort {lang}_redirect_chain_exceeded.txt | uniq > {lang}_redirect_chain_exceeded_uniq.txt
+sort {lang}_witness_methods.txt | uniq > {lang}_witness_methods_uniq.txt
 cut -f2 {lang}_conv_failed_uniq.txt | sort | uniq > {lang}_dsts_failed_uniq.txt
 ```
 
@@ -294,6 +303,13 @@ in the database as `cardinality(witnesses)` (a stored generated column).
 per-language files; `--db-url` for the `languages` table.
 
 **Output:** `run/wp_links_witnesses.csv`.
+
+The same merge, pointed at a different per-language suffix via
+`--input-suffix _best_guesses_uniq.txt`, produces
+`run/obs_best_guess_witnesses.csv` for the `obs_best_guess_links` table
+(§4.2.1): a best-guess edge is structurally the same object as a `wp_links`
+row — a candidate edge stalk with witness provenance — just untrusted, so it
+gets the same aggregation code (not a fork) and a separate table.
 
 (`convert2sv` still exists for ad-hoc `uniq -c` output conversion but is no
 longer part of the wp_links path.)
@@ -450,6 +466,82 @@ link from the article about Q42 (Douglas Adams) to the article about Q1
 against the old scalar schema works unchanged. The GIN index serves
 `witnesses && ...` (any-of) and `witnesses @> ...` (contains) filters.
 
+#### 4.2.1 Conversion obstruction tables
+
+The places where a language's local link structure fails to glue onto the
+shared QID graph, loaded from `wp_convert`'s per-language diagnostic files
+(the files remain the pipeline interchange format; no stage writes directly
+to the database). All language references use `languages.id`, never text
+codes. Failures are stored per-language (long form) because the source QID
+matters; cross-language aggregation of raw title strings is only meaningful
+for identical titles, so it is provided as a materialized view rather than
+as the storage format.
+
+```sql
+-- Append-only method lookup, same discipline as `languages`
+CREATE TABLE resolution_methods (
+    id   SMALLINT PRIMARY KEY,   -- 1 redirect_deep, 2 crosslang_qid, 3 crosslang_title
+    name TEXT UNIQUE NOT NULL
+);
+
+-- Edges resolved only via the 'best' label fallback: same shape as wp_links
+-- (candidate edge stalk with witness provenance) but a separate table, so no
+-- existing query can accidentally treat them as consensus.
+CREATE TABLE obs_best_guess_links (
+    src       VARCHAR(11) NOT NULL,
+    dst       VARCHAR(11) NOT NULL,
+    witnesses INT2[]      NOT NULL,
+    n         INT GENERATED ALWAYS AS (cardinality(witnesses)) STORED,
+    PRIMARY KEY (src, dst)
+);
+-- Loaded from: obs_best_guess_witnesses.csv (wp_aggregate --input-suffix)
+
+-- Unresolvable link targets (strategy k)
+CREATE TABLE obs_conv_failures (
+    lang_id INT2 NOT NULL REFERENCES languages(id),
+    src     VARCHAR(11) NOT NULL,
+    target  TEXT NOT NULL CHECK (length(target) <= 384),
+    PRIMARY KEY (lang_id, src, target)
+);
+
+-- Source articles with no QID mapping (unconnected pages)
+CREATE TABLE obs_src_not_found (
+    lang_id INT2 NOT NULL REFERENCES languages(id),
+    title   TEXT NOT NULL CHECK (length(title) <= 384),
+    PRIMARY KEY (lang_id, title)
+);
+
+-- Redirect chains exceeding the depth limit, and cycles
+CREATE TABLE obs_redirect_anomalies (
+    lang_id INT2 NOT NULL REFERENCES languages(id),
+    title   TEXT NOT NULL,
+    kind    TEXT NOT NULL CHECK (kind IN ('depth_exceeded', 'cycle')),
+    PRIMARY KEY (lang_id, title)
+);
+
+-- Side-channel: degraded successful resolutions present in wp_links
+CREATE TABLE wp_witness_methods (
+    lang_id INT2 NOT NULL REFERENCES languages(id),
+    src     VARCHAR(11) NOT NULL,
+    dst     VARCHAR(11) NOT NULL,
+    method  INT2 NOT NULL REFERENCES resolution_methods(id),
+    PRIMARY KEY (lang_id, src, dst, method)
+);
+
+-- Cross-language failed-target aggregation (replaces
+-- dsts_failed_uniq_combined.txt as the queryable artifact); refreshed by
+-- the obs_failed_targets_refreshed Make target after conv_failures loads.
+CREATE MATERIALIZED VIEW obs_failed_targets AS
+SELECT target, count(DISTINCT lang_id) AS n_langs, count(*) AS n_pairs
+FROM obs_conv_failures GROUP BY target;
+```
+
+The per-language tables are loaded by `scripts/load_obs.sh` (structural
+validation in awk, `\copy` into a staging table, insert with the language's
+id — inserting codes that don't exist yet, append-only — and the 384-char
+length filter applied in SQL so it matches the CHECK exactly; malformed and
+rejected counts are logged per language).
+
 ### 4.3 Lexeme tables
 
 ```sql
@@ -564,6 +656,47 @@ For a given language id, counts edges with `wp_count >= N` that it does / does n
 psql -d algae -v lang_id=5 -v min_count=10 -f queries/language_recall.sql
 ```
 
+### 5.5 Missing targets query (`queries/missing_targets.sql`)
+
+Top rows of `obs_failed_targets` by `n_langs`: link targets that many
+languages independently failed to resolve — missing articles or missing
+sitelinks. Identical-string matching means proper nouns dominate, by design.
+
+```
+psql -d algae -v limit=100 -f queries/missing_targets.sql
+```
+
+### 5.6 Promotable best guesses (`queries/promotable_best_guesses.sql`)
+
+`obs_best_guess_links` rows with `n >= threshold`, LEFT JOINed to `wp_links`
+and `wd_links` to show whether trusted evidence already exists — candidate
+merged-article or missing-sitelink cases when it doesn't.
+
+```
+psql -d algae -v threshold=3 -f queries/promotable_best_guesses.sql
+```
+
+### 5.7 Coverage violations (`queries/coverage_violations.sql`)
+
+`wp_witness_methods` rows with a crosslang method joined to `wp_links`:
+witnesses counted in `wp_count` whose language has no article on the
+destination. Reports the per-edge violation fraction (violating witnesses /
+`wp_count`) so heavily-affected edges can be down-weighted downstream.
+
+```
+psql -d algae -v limit=100 -f queries/coverage_violations.sql
+```
+
+### 5.8 Unconnected hubs (`queries/unconnected_hubs.sql`)
+
+`obs_src_not_found` titles that also appear as targets in
+`obs_conv_failures` within the same language — pages that exist, are linked
+to, but have no Wikidata item.
+
+```
+psql -d algae -v limit=100 -f queries/unconnected_hubs.sql
+```
+
 ---
 
 ## 6. Microscope (`microscope`)
@@ -646,6 +779,20 @@ run/%_links_converted_uniq.txt: run/%_links_converted.txt
 # language ids resolved against the append-only `languages` table)
 run/wp_links_witnesses.csv: $(ALL_LANG_CONVERTED_UNIQ)
 	wp_aggregate --output $@
+
+# Obstruction records: best guesses reuse the same merge; the per-language
+# tables load via scripts/load_obs.sh; the failed-target rollup is a
+# materialized view refreshed after the conv_failures load
+run/obs_best_guess_witnesses.csv: $(ALL_LANG_BEST_GUESSES_UNIQ)
+	wp_aggregate --input-suffix _best_guesses_uniq.txt --output $@
+
+obs_conv_failures_loaded: $(ALL_LANG_CONV_FAILED_UNIQ)
+	scripts/load_obs.sh conv_failures $^ && touch $@
+# (similar for obs_src_not_found, obs_redirect_anomalies, wp_witness_methods;
+#  obs_loaded groups them all)
+
+obs_failed_targets_refreshed: obs_conv_failures_loaded
+	psql -c "REFRESH MATERIALIZED VIEW obs_failed_targets;" && touch $@
 
 # Wiktionary targets (per-language extraction, combination, conversion)
 run/wkt/%_wikilinks.txt: data/content/%wiktionary.manifest

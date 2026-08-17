@@ -18,3 +18,4 @@
 # are .PHONY and so re-run regardless, which makes the stamps write-only
 # litter — but `make all` leaves 15 of them lying next to the source.
 /*_loaded
+/obs_failed_targets_refreshed

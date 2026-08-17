@@ -37,6 +37,12 @@ struct Args {
     /// "host=localhost dbname=algae")
     #[arg(long)]
     db_url: Option<String>,
+
+    /// Per-language input filename suffix (appended to the language code).
+    /// The default merges the trusted link streams; obs_best_guess_links is
+    /// produced by the same merge over "_best_guesses_uniq.txt".
+    #[arg(long, default_value = "_links_converted_uniq.txt")]
+    input_suffix: String,
 }
 
 /// Insert any codes not yet present (append-only: never update or delete),
@@ -149,7 +155,7 @@ async fn main() -> Result<()> {
 
     let mut streams: Vec<Stream> = Vec::with_capacity(codes.len());
     for lang in &codes {
-        let path = args.run_dir.join(format!("{lang}_links_converted_uniq.txt"));
+        let path = args.run_dir.join(format!("{lang}{}", args.input_suffix));
         let file = File::open(&path).with_context(|| format!("opening {}", path.display()))?;
         let id = *id_map
             .get(lang)
@@ -194,8 +200,9 @@ async fn main() -> Result<()> {
         if next_line(&mut streams[idx].reader, &mut buf)? {
             if buf.as_slice() <= current.as_slice() {
                 bail!(
-                    "{}_links_converted_uniq.txt is not sorted/unique: {:?} after {:?}",
+                    "{}{} is not sorted/unique: {:?} after {:?}",
                     streams[idx].lang,
+                    args.input_suffix,
                     String::from_utf8_lossy(&buf),
                     String::from_utf8_lossy(&current)
                 );
